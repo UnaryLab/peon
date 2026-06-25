@@ -1,0 +1,8 @@
+# Slack Bolt (Socket Mode handler ships with it). Loose lower bounds.
+slack-bolt>=1.18
+
+# Loads the eight per-agent tokens + CLAUDE_* from .env at startup.
+python-dotenv>=1.0
+
+# Dev / self-check only.
+pytest>=7

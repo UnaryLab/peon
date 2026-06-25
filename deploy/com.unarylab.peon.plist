@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.unarylab.peon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>conda</string><string>run</string><string>-n</string><string>peon</string>
+    <string>python</string><string>-m</string><string>src</string>
+  </array>
+  <!-- EDIT: set WorkingDirectory to your local checkout path. -->
+  <key>WorkingDirectory</key><string>/Users/YOU/Projects/peon</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>

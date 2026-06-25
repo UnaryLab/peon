@@ -1,0 +1,13 @@
+[Unit]
+Description=peon multi-agent Slack bots
+After=network-online.target
+
+[Service]
+# Adjust WorkingDirectory and the conda path in ExecStart for your machine.
+WorkingDirectory=%h/Projects/peon
+ExecStart=/usr/bin/env conda run -n peon python -m src
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
