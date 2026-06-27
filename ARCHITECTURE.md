@@ -365,20 +365,22 @@ ABSOLUTE path (the subprocess cwd needs one), so the per-thread workdir lives at
 `<home>/Projects/.peon-workdirs/<agent>/<thread>`. Set `WORKDIR_BASE` to override.
 
 The workdir is the run's cwd/home, not a confinement boundary (the run is
-unsandboxed). Its purpose is the outbound file flow: after a run, files created or
-modified under the workdir (mtime since run start) are uploaded back into the
-thread. `get_workdir` is the single owner of the path scheme, reused by both
-runners and by the outbound file upload.
+unsandboxed). Its purpose is the outbound file flow: a run delivers files only by
+naming them in a `<<files: ...>>` marker, and each named file is resolved inside
+the workdir before upload. `get_workdir` is the single owner of the path scheme,
+reused by both runners and by the outbound file upload.
 
 ## Files in and out
 
 Inbound: a message's `files[]` are downloaded with the bot token
 (`_http_get_bytes`, stdlib `urllib`, the single mocked HTTP seam) into a
 per-thread temp dir, and their local paths are appended to the prompt so the CLI
-can open them. Outbound: after the run, files created/modified in the thread's
-workdir (mtime at or after the run start) are uploaded back into the thread via
-`files_upload_v2`. Both need the `files:read` / `files:write` bot scopes. With no
-workdir resolved for the thread, the outbound scan is a no-op.
+can open them. Outbound is opt-in and model-driven: a run delivers files only by
+ending its reply with a `<<files: name1, name2>>` marker (which is stripped from
+the posted reply); each named file is resolved inside the thread's workdir (paths
+escaping it are rejected) and uploaded via `files_upload_v2`. Both need the
+`files:read` / `files:write` bot scopes. No marker (the default), or no workdir
+resolved for the thread, uploads nothing.
 
 ## Cron (Slack-native, in-process)
 

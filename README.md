@@ -124,9 +124,12 @@ Each agent is its own Slack bot that you address by name.
    thread, the visible prior thread messages are included in its prompt, so it can
    read another agent's Slack-visible output in that same thread.
 5. **Send and receive files.** Attach files to your message and the agent can
-   read them (their paths are passed to the CLI). Files the agent produces in its
-   per-thread workdir are uploaded back into the thread. (This needs the
-   `files:read` / `files:write` scopes, see [Prerequisites](#prerequisites).)
+   read them (their paths are passed to the CLI). The agent sends files back only
+   when you explicitly ask it to: it then ends its reply with a `<<files: ...>>`
+   marker naming them, that marker is stripped from the message, and just those
+   files (from its per-thread workdir) are uploaded into the thread. An ordinary
+   reply uploads nothing. (This needs the `files:read` / `files:write` scopes, see
+   [Prerequisites](#prerequisites).)
 6. **See usage.** If the operator set `SHOW_USAGE`, each reply ends with a small
    one-line footer (context %, tokens, cost, duration); fields that a backend does
    not report are omitted.

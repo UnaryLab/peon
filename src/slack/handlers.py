@@ -144,6 +144,9 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
 
     def _update(text):
         nonlocal last_post
+        # Scrub any (possibly partial) <<files: ...>> marker so it never flashes
+        # mid-stream; the final update strips it for real via _parse_file_marker.
+        text = files._strip_file_marker(text)
         if not text:
             return
         current = now()
@@ -183,8 +186,10 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
     never crash the process: every failure path is caught and turned into a short
     error message in the thread.
 
-    OUTBOUND FILES: after the final update, files the run created/modified in the
-    thread's workdir are uploaded back into the thread (see _maybe_upload_outputs).
+    OUTBOUND FILES: a run delivers files ONLY by ending its reply with a
+    `<<files: a, b>>` marker; we strip that marker from the shown reply and upload
+    just the named files (resolved inside the workdir; see _maybe_upload_named).
+    No marker (the default) uploads nothing.
     """
     # Register a cancel token so a "!stop" in this thread can SIGINT the run; the
     # finally below always drops it. See src.slack.interrupt / common.Interrupt.
@@ -203,24 +208,30 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
         prompt = (
             f"For this conversation your name is {agent['display_name']}. "
             f"If the user asks who you are, you are {agent['display_name']}.\n\n"
+            "If -- and only if -- the user explicitly asks you to produce, send, "
+            "attach, or share a file, end your reply with a line "
+            "`<<files: name1, name2>>` naming the files (paths in your working "
+            "directory) to deliver. Otherwise never write that marker and no "
+            "files are sent.\n\n"
             f"{prompt}"
         )
         overrides = store.get_override(agent["name"], thread_ts)
         # Always give the run its per-thread workdir as cwd. The run is fully
         # unsandboxed and can touch any path; the workdir is just its home so the
-        # outbound file-upload-back (mtime since run start, in this dir) works.
+        # outbound file delivery (the run's named files, in this dir) works.
         overrides = {
             **(overrides or {}),
             "_workdir": store.get_workdir(agent["name"], thread_ts, create=True),
         }
         updater = _make_stream_updater(client, channel, placeholder_ts)
-        # Mark the run start so we can upload only files the run created/modified in
-        # the thread's workdir (see _maybe_upload_outputs). Wall-clock mtime compare.
-        run_started = time.time()
         text, session_id, meta = runner.answer(
             agent, prompt, prior, overrides=overrides, on_update=updater, cancel=token
         )
         store.set_session(agent["name"], thread_ts, session_id)
+        # Split off any `<<files: ...>>` delivery marker BEFORE the interrupt notice
+        # / usage footer are appended, so it is gone from the posted reply and the
+        # named files drive the outbound upload below.
+        text, upload_names = files._parse_file_marker(text)
         # User interrupt: the run settled early. Mark the (partial) reply so the
         # thread reads like a terminal Ctrl-C. token.proc guards the rare non-stream
         # case where the flag was set but nothing was actually killable.
@@ -233,9 +244,8 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
         # Unconditional FINAL update with the complete text + footer. Always fires,
         # regardless of the streaming throttle, so the last chunk is never lost.
         client.chat_update(channel=channel, ts=placeholder_ts, text=text)
-        # Outbound files: upload any files the run produced in the thread's workdir
-        # back into the thread.
-        files._maybe_upload_outputs(client, channel, thread_ts, agent, run_started)
+        # Outbound files: upload only the files the run named in its marker.
+        files._maybe_upload_named(client, channel, thread_ts, agent, upload_names)
     except (claude_runner.ClaudeRunError, codex_runner.CodexRunError) as exc:
         if token.requested:
             # Interrupted during a phase we cannot settle gracefully (e.g. a codex

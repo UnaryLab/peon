@@ -64,9 +64,11 @@ from .slack.files import (  # noqa: F401
     _append_attachments,
     _attachments_dir,
     _download_attachments,
-    _files_modified_since,
     _http_get_bytes,
-    _maybe_upload_outputs,
+    _maybe_upload_named,
+    _parse_file_marker,
+    _resolve_named_files,
+    _strip_file_marker,
     _thread_workdir,
     _upload_workdir_files,
 )

@@ -2101,6 +2101,93 @@ def test_run_and_update_injects_identity_every_turn(monkeypatch, tmp_path):
     assert captured["prompt"].endswith("who are you")
 
 
+def test_run_and_update_marker_uploads_named_file_and_strips_marker(
+    monkeypatch, tmp_path
+):
+    # A reply ENDING in a <<files: ...>> marker delivers ONLY the named file, and
+    # the marker is stripped from the text posted back to Slack.
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    sessions = str(tmp_path / "sessions.json")
+    overrides = str(tmp_path / "overrides.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
+    monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
+    monkeypatch.setenv("STREAM_OUTPUT", "0")
+
+    # Pre-create the named file in the thread's workdir so the marker resolves it.
+    workdir = claude_runner.get_workdir("aristotle", "T_files", create=True)
+    with open(os.path.join(workdir, "plot.png"), "w", encoding="utf-8") as f:
+        f.write("PNG")
+
+    posted = {}
+    uploads = []
+
+    class _Runner:
+        @staticmethod
+        def answer(agent, prompt, prior, overrides=None, on_update=None, cancel=None):
+            return "Here is your plot.\n<<files: plot.png>>", "sid-1", {}
+
+    class _Client:
+        def chat_update(self, channel=None, ts=None, text=None):
+            posted["text"] = text
+            return {"ok": True}
+
+        def files_upload_v2(self, **kwargs):
+            uploads.append(kwargs)
+            return {"ok": True}
+
+    monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
+    client = _Client()
+
+    _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "make a plot", "T_files")
+    # Marker is gone from the shown reply; the prose remains.
+    assert "<<files:" not in posted["text"]
+    assert "Here is your plot." in posted["text"]
+    # Exactly the named file was uploaded.
+    assert len(uploads) == 1
+    assert os.path.basename(uploads[0]["file"]) == "plot.png"
+
+
+def test_run_and_update_no_marker_uploads_nothing(monkeypatch, tmp_path):
+    # A plain reply (no marker) uploads nothing, even when the workdir has files.
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    sessions = str(tmp_path / "sessions.json")
+    overrides = str(tmp_path / "overrides.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
+    monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
+    monkeypatch.setenv("STREAM_OUTPUT", "0")
+
+    workdir = claude_runner.get_workdir("aristotle", "T_nofiles", create=True)
+    with open(os.path.join(workdir, "scratch.txt"), "w", encoding="utf-8") as f:
+        f.write("noise")
+
+    uploads = []
+
+    class _Runner:
+        @staticmethod
+        def answer(agent, prompt, prior, overrides=None, on_update=None, cancel=None):
+            return "just a normal answer", "sid-1", {}
+
+    class _Client:
+        def chat_update(self, channel=None, ts=None, text=None):
+            return {"ok": True}
+
+        def files_upload_v2(self, **kwargs):
+            uploads.append(kwargs)
+            return {"ok": True}
+
+    monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
+    client = _Client()
+
+    _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "hi", "T_nofiles")
+    assert uploads == []
+
+
 # ---------------------------------------------------------------------------
 # CRON SCHEDULING (Slack-native). The store (crons.json, sibling of sessions.json)
 # CRUD lives in claude_runner; the 5-field cron-match logic + the scheduler tick
@@ -3145,20 +3232,37 @@ def test_attachments_dir_is_per_thread_and_created(tmp_path, monkeypatch):
     assert d1 != d2  # different threads -> different dirs
 
 
-def test_maybe_upload_outputs_no_workdir_skips_upload(monkeypatch):
+def test_maybe_upload_named_no_names_skips_upload(monkeypatch):
     if not _HAVE_APP:
         return
     assert _appmod is not None
-    # No get_workdir helper installed -> the outbound path is a no-op and
-    # files_upload_v2 is NEVER called.
-    monkeypatch.delattr(claude_runner, "get_workdir", raising=False)
+    # No marker -> no names -> the outbound path is a no-op; the workdir is never
+    # even resolved and files_upload_v2 is NEVER called.
+    monkeypatch.setattr(
+        claude_runner,
+        "get_workdir",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not resolve")),
+        raising=False,
+    )
     client = _FakeFileClient()
-    count = _appmod._maybe_upload_outputs(client, "C1", "T1", _FILE_AGENT, since=0.0)
+    count = _appmod._maybe_upload_named(client, "C1", "T1", _FILE_AGENT, [])
     assert count == 0
     assert client.uploads == []
 
 
-def test_maybe_upload_outputs_uploads_produced_files(monkeypatch, tmp_path):
+def test_maybe_upload_named_no_workdir_skips_upload(monkeypatch):
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    # Names given but no get_workdir helper -> no workdir -> still a no-op.
+    monkeypatch.delattr(claude_runner, "get_workdir", raising=False)
+    client = _FakeFileClient()
+    count = _appmod._maybe_upload_named(client, "C1", "T1", _FILE_AGENT, ["result.txt"])
+    assert count == 0
+    assert client.uploads == []
+
+
+def test_maybe_upload_named_uploads_resolved_files(monkeypatch, tmp_path):
     if not _HAVE_APP:
         return
     assert _appmod is not None
@@ -3166,55 +3270,87 @@ def test_maybe_upload_outputs_uploads_produced_files(monkeypatch, tmp_path):
     workdir.mkdir()
     produced = workdir / "result.txt"
     produced.write_text("generated output", encoding="utf-8")
-    # Install a get_workdir helper that points at the workdir for this thread.
+    # A sibling the run did NOT name must never be uploaded.
+    (workdir / "ignored.txt").write_text("noise", encoding="utf-8")
     monkeypatch.setattr(
         claude_runner, "get_workdir", lambda name, ts: str(workdir), raising=False
     )
     client = _FakeFileClient()
-    # since=0 so the just-written file counts as produced during the run.
-    count = _appmod._maybe_upload_outputs(client, "C1", "T1", _FILE_AGENT, since=0.0)
+    count = _appmod._maybe_upload_named(client, "C1", "T1", _FILE_AGENT, ["result.txt"])
     assert count == 1
     assert len(client.uploads) == 1
     up = client.uploads[0]
     assert up["channel"] == "C1"
     assert up["thread_ts"] == "T1"
-    assert up["file"] == str(produced)
+    assert up["file"] == os.path.realpath(str(produced))
     assert up["filename"] == "result.txt"
 
 
-def test_files_modified_since_filters_by_mtime(tmp_path):
+def test_parse_file_marker_extracts_and_strips():
     if not _HAVE_APP:
         return
     assert _appmod is not None
-    old = tmp_path / "old.txt"
-    new = tmp_path / "new.txt"
-    old.write_text("old", encoding="utf-8")
-    new.write_text("new", encoding="utf-8")
-    # Force mtimes around an explicit cutoff (no sleep, no real wall-clock read).
-    os.utime(str(old), (100.0, 100.0))
-    os.utime(str(new), (200.0, 200.0))
-    found = _appmod._files_modified_since(str(tmp_path), since=150.0)
-    assert found == [str(new)]  # only the file touched at/after the cutoff
-    # A missing workdir is empty, never an error.
-    assert _appmod._files_modified_since(str(tmp_path / "nope"), since=0.0) == []
+    # No marker -> text unchanged, no names.
+    assert _appmod._parse_file_marker("just a normal reply") == (
+        "just a normal reply",
+        [],
+    )
+    # Marker -> names parsed (trimmed, empties dropped) and stripped off the reply.
+    clean, names = _appmod._parse_file_marker(
+        "Here is your plot.\n<<files: plot.png , data.csv,>>"
+    )
+    assert clean == "Here is your plot."
+    assert names == ["plot.png", "data.csv"]
+    # Two markers (degenerate; the run is meant to emit one, last): names come
+    # from the LAST, and everything from the FIRST marker onward is stripped.
+    clean, names = _appmod._parse_file_marker("a <<files: x>> b <<files: y>>")
+    assert names == ["y"]
+    assert clean == "a"
+    # Falsy input is returned as-is.
+    assert _appmod._parse_file_marker("") == ("", [])
 
 
-def test_files_modified_since_skips_caches_and_dotfiles(tmp_path):
+def test_strip_file_marker_removes_complete_and_partial():
     if not _HAVE_APP:
         return
     assert _appmod is not None
-    # A real output file, a tool-cache dir with a file, and a dotfile -- all fresh.
-    out = tmp_path / "result.txt"
-    out.write_text("real", encoding="utf-8")
-    cache = tmp_path / ".ruff_cache"
-    cache.mkdir()
-    (cache / "CACHEDIR.TAG").write_text("Signature", encoding="utf-8")
-    dotfile = tmp_path / ".gitignore"
-    dotfile.write_text("*.pyc", encoding="utf-8")
-    for p in (out, cache / "CACHEDIR.TAG", dotfile):
-        os.utime(str(p), (200.0, 200.0))
-    found = _appmod._files_modified_since(str(tmp_path), since=0.0)
-    assert found == [str(out)]  # cache dir + dotfiles excluded, only the real output
+    # A complete marker is removed.
+    assert _appmod._strip_file_marker("done.\n<<files: a.png>>") == "done."
+    # A partial/unterminated trailing marker (mid-stream) is removed too.
+    assert _appmod._strip_file_marker("almost <<files: pl") == "almost"
+    # No marker -> unchanged.
+    assert _appmod._strip_file_marker("plain text") == "plain text"
+
+
+def test_resolve_named_files_resolves_and_rejects_escapes(tmp_path):
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    rp = os.path.realpath
+    workdir = tmp_path / "wd"
+    (workdir / "sub").mkdir(parents=True)
+    top = workdir / "top.txt"
+    top.write_text("top", encoding="utf-8")
+    nested = workdir / "sub" / "deep.csv"
+    nested.write_text("deep", encoding="utf-8")
+    # A secret OUTSIDE the workdir must never be reachable.
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope", encoding="utf-8")
+
+    # Resolves by relative path and by bare basename (via the walk).
+    assert _appmod._resolve_named_files(str(workdir), ["top.txt"]) == [rp(str(top))]
+    assert _appmod._resolve_named_files(str(workdir), ["sub/deep.csv"]) == [
+        rp(str(nested))
+    ]
+    assert _appmod._resolve_named_files(str(workdir), ["deep.csv"]) == [rp(str(nested))]
+    # `..` escape, an absolute path outside, and a missing name are all rejected.
+    assert _appmod._resolve_named_files(str(workdir), ["../secret.txt"]) == []
+    assert _appmod._resolve_named_files(str(workdir), [str(secret)]) == []
+    assert _appmod._resolve_named_files(str(workdir), ["ghost.txt"]) == []
+    # Falsy / non-dir inputs are empty, never an error.
+    assert _appmod._resolve_named_files("", ["x"]) == []
+    assert _appmod._resolve_named_files(str(workdir), []) == []
+    assert _appmod._resolve_named_files(str(workdir / "nope"), ["x"]) == []
 
 
 def test_upload_workdir_files_swallows_errors():
@@ -3748,6 +3884,8 @@ if __name__ == "__main__":
         test_control_phrase_non_command_returns_false,
         test_run_and_update_always_injects_workdir,
         test_run_and_update_injects_identity_every_turn,
+        test_run_and_update_marker_uploads_named_file_and_strips_marker,
+        test_run_and_update_no_marker_uploads_nothing,
         test_cron_store_add_list_remove,
         test_cron_store_set_enabled_toggles,
         test_cron_store_id_autogenerated_and_unique,
@@ -3789,10 +3927,12 @@ if __name__ == "__main__":
         test_download_attachments_no_files_is_noop,
         test_download_attachments_skips_failed_download,
         test_attachments_dir_is_per_thread_and_created,
-        test_maybe_upload_outputs_no_workdir_skips_upload,
-        test_maybe_upload_outputs_uploads_produced_files,
-        test_files_modified_since_filters_by_mtime,
-        test_files_modified_since_skips_caches_and_dotfiles,
+        test_maybe_upload_named_no_names_skips_upload,
+        test_maybe_upload_named_no_workdir_skips_upload,
+        test_maybe_upload_named_uploads_resolved_files,
+        test_parse_file_marker_extracts_and_strips,
+        test_strip_file_marker_removes_complete_and_partial,
+        test_resolve_named_files_resolves_and_rejects_escapes,
         test_upload_workdir_files_swallows_errors,
         test_random_quote_returns_member_of_list,
         test_random_quote_empty_when_missing_or_invalid,
