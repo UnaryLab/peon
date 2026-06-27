@@ -1,15 +1,13 @@
 """Generate a Slack app manifest for an agent from its registry entry.
 
-The Slack apps used to be defined by static per-agent JSON files under
-manifests/; they were byte-identical except for the two name fields. That
-duplication is gone: agents.json is the single source of truth, and this module
-derives each agent's manifest from it on demand (see `python -m src manifest`).
+agents.json is the single source of truth; this module derives each agent's
+Slack app manifest from it on demand (see `python -m src manifest`), so there are
+no static per-agent manifest files to keep in sync.
 
-The constants below (bot scopes, bot events, socket settings) were copied
-verbatim from those static files; only the two name fields vary per agent, both
-set to the agent's display_name. The key ordering (display_information, features,
-oauth_config, settings) matches the old files so json.dumps output is
-structurally identical.
+The constants below (bot scopes, bot events, socket settings) are fixed and
+shared by every agent; only the two name fields vary per agent, both set to the
+agent's display_name. The key ordering (display_information, features,
+oauth_config, settings) is fixed so json.dumps output is deterministic.
 
 Imports nothing from slack_bolt, so it stays importable/testable without Slack
 installed (and `python -m src manifest <name>` needs no tokens or network).
@@ -18,7 +16,7 @@ installed (and `python -m src manifest <name>` needs no tokens or network).
 import json
 from pathlib import Path
 
-# Bot OAuth scopes (copied verbatim from the old static manifests). app_mentions
+# Bot OAuth scopes. app_mentions
 # + chat:write to read mentions and reply; the *:history scopes so the bot can
 # read threaded replies it should continue. files:read + files:write back the
 # attachment feature: files:read to download inbound files via url_private,
@@ -35,7 +33,7 @@ _BOT_SCOPES = [
     "files:write",
 ]
 
-# Event subscriptions (copied verbatim). app_mention plus message.* for in-thread
+# Event subscriptions. app_mention plus message.* for in-thread
 # follow-ups.
 _BOT_EVENTS = [
     "app_mention",
@@ -50,8 +48,7 @@ def build_manifest(agent):
 
     display_information.name and features.bot_user.display_name are both the
     agent's display_name; every other field is a fixed constant shared by all the
-    agents. Key ordering matches the old static files so a json.dumps of this is
-    structurally identical to them.
+    agents. Key ordering is fixed so a json.dumps of this is deterministic.
     """
     display_name = agent["display_name"]
     return {
@@ -72,14 +69,6 @@ def build_manifest(agent):
         "settings": {
             "event_subscriptions": {
                 "bot_events": list(_BOT_EVENTS),
-            },
-            # Interactivity is required for the write-mode consent Approve/Deny
-            # buttons. Over Socket Mode no public request URL is needed (the
-            # payloads arrive on the socket), so is_enabled alone is sufficient.
-            # The operator must reinstall/refresh each app from the regenerated
-            # manifest for this to take effect.
-            "interactivity": {
-                "is_enabled": True,
             },
             "socket_mode_enabled": True,
             "token_rotation_enabled": False,

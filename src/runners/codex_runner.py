@@ -1,7 +1,7 @@
 """Facade for the Codex runner backend.
 
-Phase-2 split: the Codex-only runner internals now live in `src/runners/codex.py`.
-This module is a thin facade that re-exports them so the runner's public surface
+The Codex-only runner internals live in `src/runners/codex.py`. This module is a
+thin facade that re-exports them so the runner's public surface
 (and the test suite's `codex_runner.<name>` references, including the
 `subprocess` patch target) keep resolving unchanged.
 
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import subprocess  # noqa: F401 - load-bearing: tests patch codex_runner.subprocess.{run,Popen}
 
-# Codex-only runner internals (moved verbatim into src/runners/codex.py).
+# Codex-only runner internals (src/runners/codex.py).
 from .codex import (  # noqa: F401
     _agent_message_text_from_event,
     _cwd_from_overrides,

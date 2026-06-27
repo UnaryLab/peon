@@ -79,14 +79,12 @@ class CodexRunError(Exception):
 
 
 def _cwd_from_overrides(overrides):
-    """The subprocess cwd for this run, or None to keep the default (process cwd).
-
-    Returns the confined workdir ONLY when write-mode is on (overrides has
-    write=True AND a non-empty _workdir); otherwise None, so the read-only path
-    runs in the inherited cwd exactly as before (behavior byte-identical). The dir
-    is created on demand so codex can write into it. Mirrors claude_runner's helper.
+    """The subprocess cwd for this run: the per-thread workdir, or None for the
+    inherited process cwd. Returns overrides["_workdir"] when present (the worker
+    always injects it), creating the dir on demand so codex can write into it.
+    Mirrors claude_runner's helper.
     """
-    if overrides and overrides.get("write") and overrides.get("_workdir"):
+    if overrides and overrides.get("_workdir"):
         workdir = overrides["_workdir"]
         os.makedirs(workdir, exist_ok=True)
         return workdir
@@ -106,28 +104,24 @@ def build_command(
     Contract (empirically verified against codex-cli 0.141.0):
 
       FRESH run (is_new_session=True, no thread_id yet):
-        codex exec --json --skip-git-repo-check -s read-only
+        codex exec --json --skip-git-repo-check -s danger-full-access
               -o <last_message_file> [-m <model>] "<prompt>"
 
       RESUME run (is_new_session=False, session_id is the stored thread_id):
         codex exec resume <session_id> --json --skip-git-repo-check
-              -c sandbox_mode=read-only
+              -c sandbox_mode=danger-full-access
               -o <last_message_file> [-m <model>] "<prompt>"
 
-    WRITE-MODE (read-write tool surface), default OFF: when overrides has
-    write=True AND a non-empty "_workdir", the sandbox value flips from read-only
-    to workspace-write (the fresh `-s` flag and the resume `-c sandbox_mode`
-    value), and the runner sets the subprocess cwd to that confined workdir so
-    edits stay inside it. With write off (the default), or no workdir, the sandbox
-    stays read-only and the argv is byte-identical to the read-only path above.
-    (Codex has no sub-agent concept, so there is nothing to unblock there: N/A.)
+    Every run is fully unsandboxed via danger-full-access (the fresh `-s` flag / the
+    resume `-c sandbox_mode` value). The runner sets the subprocess cwd to the
+    thread's workdir (overrides["_workdir"], injected by the worker) so files the
+    run produces can be uploaded back; the run itself is unconfined.
 
     Notes:
       - `--skip-git-repo-check` is REQUIRED (this project is not a git repo).
       - The `resume` subcommand does NOT accept `-s/--sandbox` or `-a`; sandbox
-        is set via `-c sandbox_mode=read-only`. Do not TOML-quote this enum:
-        codex 0.142.0 treats `"read-only"` as the literal variant name and
-        rejects it.
+        is set via `-c sandbox_mode=danger-full-access`. Do not TOML-quote this
+        enum: codex treats `"danger-full-access"` as the literal variant name.
       - `-o/--output-last-message <file>`: the agent's final reply text is
         written to this file (read it for the reply).
       - `-m <model>` is added ONLY when model is non-empty (from agents.json
@@ -164,14 +158,10 @@ def build_command(
     """
     argv = ["codex", "exec"]
 
-    # WRITE-MODE (read-write tool surface), default OFF. Only when the per-thread
-    # override has write=True AND a confined workdir is present do we relax the
-    # sandbox from read-only to workspace-write; the runner also sets the
-    # subprocess cwd to that isolated workdir, so edits are confined there. With
-    # write off (the default) the sandbox stays read-only and the argv is
-    # byte-identical to the read-only path.
-    write_on = bool(overrides and overrides.get("write") and overrides.get("_workdir"))
-    sandbox = "workspace-write" if write_on else "read-only"
+    # Every run is fully unsandboxed: danger-full-access (fresh -s flag, resume -c
+    # sandbox_mode). cwd is the thread's workdir (overrides["_workdir"], set by the
+    # worker) so files the run produces can be uploaded back.
+    sandbox = "danger-full-access"
 
     if is_new_session:
         argv += ["--json", "--skip-git-repo-check", "-s", sandbox]

@@ -81,7 +81,7 @@ def _sibling_store_path(filename):
     return os.path.join(os.path.dirname(_sessions_path()), filename)
 
 
-# Default wall-clock for the consent TTL. Module-level so tests inject a fake.
+# Default wall-clock seam for the stores. Module-level so tests can inject a fake.
 _now = time.time
 
 

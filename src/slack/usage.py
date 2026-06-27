@@ -1,7 +1,7 @@
 """Usage-footer helpers: the SHOW_USAGE toggle and the one-line footer renderer.
 
 Leaf module (no cross-module deps): reads os.environ live and formats a runner's
-meta dict. Moved verbatim from the former src/app.py.
+meta dict.
 """
 
 from __future__ import annotations

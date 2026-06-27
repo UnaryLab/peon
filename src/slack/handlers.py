@@ -4,14 +4,11 @@ background worker, and the per-message dispatch.
 A Slack event can arrive as BOTH an app_mention and a message.*, so _handle
 dedups on a stable id (claude_runner.seen_before), acks immediately, posts a
 "thinking" placeholder, runs the slow CLI in a background thread, then
-chat_updates the placeholder with the reply. Moved verbatim from the former
-src/app.py.
+chat_updates the placeholder with the reply.
 
 Kind-A seam: runner dispatch goes through the shared `runners` package object
 (`runners.get_runner`) so a test's monkeypatch on `app.runners.get_runner` (the
-same package object) is seen here. Kind-B seam: the wall-clock `_now` is resolved
-THROUGH the app facade so a test that patches `app._now` is seen by the
-write-mode TTL check.
+same package object) is seen here.
 """
 
 from __future__ import annotations
@@ -67,7 +64,12 @@ def _message_author(message):
         name = bot_profile.get("name") or bot_profile.get("app_name")
         if name:
             return name
-    return message.get("user") or message.get("username") or message.get("bot_id") or "unknown"
+    return (
+        message.get("user")
+        or message.get("username")
+        or message.get("bot_id")
+        or "unknown"
+    )
 
 
 def _format_thread_history(messages, current_ts):
@@ -181,13 +183,9 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
     never crash the process: every failure path is caught and turned into a short
     error message in the thread.
 
-    OUTBOUND FILES: after the final update, if the thread has a designated
-    read-write workdir (the read-write feature installs claude_runner.get_workdir),
-    files the run created/modified there are uploaded back into the thread (see
-    _maybe_upload_outputs). With no workdir configured this is a no-op.
+    OUTBOUND FILES: after the final update, files the run created/modified in the
+    thread's workdir are uploaded back into the thread (see _maybe_upload_outputs).
     """
-    from src import app as _appfacade
-
     # Register a cancel token so a "!stop" in this thread can SIGINT the run; the
     # finally below always drops it. See src.slack.interrupt / common.Interrupt.
     token = interrupt.register(agent["name"], thread_ts)
@@ -208,18 +206,13 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
             f"{prompt}"
         )
         overrides = store.get_override(agent["name"], thread_ts)
-        # WRITE-MODE (consent + TTL): inject the isolated, created workdir into
-        # overrides ONLY while consent is currently ACTIVE (write flag on AND not
-        # expired, per is_write_active against the module clock). An expired or
-        # absent grant injects nothing, so the run reverts to the read-only argv
-        # automatically (byte-identical to the read-only path).
-        if overrides and store.is_write_active(
-            agent["name"], thread_ts, now=_appfacade._now
-        ):
-            overrides = {
-                **overrides,
-                "_workdir": store.get_workdir(agent["name"], thread_ts, create=True),
-            }
+        # Always give the run its per-thread workdir as cwd. The run is fully
+        # unsandboxed and can touch any path; the workdir is just its home so the
+        # outbound file-upload-back (mtime since run start, in this dir) works.
+        overrides = {
+            **(overrides or {}),
+            "_workdir": store.get_workdir(agent["name"], thread_ts, create=True),
+        }
         updater = _make_stream_updater(client, channel, placeholder_ts)
         # Mark the run start so we can upload only files the run created/modified in
         # the thread's workdir (see _maybe_upload_outputs). Wall-clock mtime compare.
@@ -240,9 +233,8 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
         # Unconditional FINAL update with the complete text + footer. Always fires,
         # regardless of the streaming throttle, so the last chunk is never lost.
         client.chat_update(channel=channel, ts=placeholder_ts, text=text)
-        # Outbound files: if this thread has a designated read-write workdir, upload
-        # any files the run produced there back into the thread. A no-op (no Slack
-        # upload call) when no workdir is configured (the common case today).
+        # Outbound files: upload any files the run produced in the thread's workdir
+        # back into the thread.
         files._maybe_upload_outputs(client, channel, thread_ts, agent, run_started)
     except (claude_runner.ClaudeRunError, codex_runner.CodexRunError) as exc:
         if token.requested:
@@ -306,14 +298,13 @@ def _handle(agent, event, client, say):
         return
 
     # A "!"-prefixed message is a per-thread control phrase (set model/effort,
-    # toggle write-mode, or reset): handle it inline and return WITHOUT running the
-    # agent. The requester's user + channel ids gate the write-mode allowlist.
+    # manage crons, or reset): handle it inline and return WITHOUT running the
+    # agent. channel_id is where a !cron schedules.
     if control._handle_control_phrase(
         agent,
         prompt,
         thread_ts,
         say,
-        user_id=event.get("user"),
         channel_id=channel,
     ):
         return

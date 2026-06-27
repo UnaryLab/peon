@@ -1,9 +1,9 @@
 """Facade for the Claude runner backend.
 
-Phase-2 split: the Claude-only runner internals now live in `src/runners/claude.py`
-and the cross-vendor dedup in `src/runners/common.py`; the vendor-neutral
-persistence stores live in `src/store/`. This module is a thin facade that
-re-exports all of those symbols so the runner's public surface (and the test
+The Claude-only runner internals live in `src/runners/claude.py` and the
+cross-vendor dedup in `src/runners/common.py`; the vendor-neutral persistence
+stores live in `src/store/`. This module is a thin facade that re-exports all of
+those symbols so the runner's public surface (and the test
 suite's `claude_runner.<name>` references, including the `setattr` patch targets
 `_sessions_path` / `_overrides_path` / `_crons_path` and the `subprocess` patch
 target) keep resolving unchanged.
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import subprocess  # noqa: F401 - load-bearing: tests patch claude_runner.subprocess.{run,Popen}
 
-# Claude-only runner internals (moved verbatim into src/runners/claude.py).
+# Claude-only runner internals (src/runners/claude.py).
 from .claude import (  # noqa: F401
     _CLAUDE_MODEL_FALLBACK,
     _CONTEXT_WINDOW_1M,
@@ -36,13 +36,13 @@ from .claude import (  # noqa: F401
     run_claude,
 )
 
-# Cross-vendor idempotency dedup.
+# Cross-vendor idempotency dedup + the run-cancel interrupt token.
 from .common import Interrupt, seen_before  # noqa: F401
 
-# Vendor-neutral persistence stores were extracted into src/store/ (sessions,
-# overrides, crons, consent, workdir all anchored on store.base). They are
-# re-exported here so the runner's public surface (and the test suite's
-# claude_runner.<name> references) keep resolving unchanged.
+# Vendor-neutral persistence stores live in src/store/ (sessions, overrides,
+# crons, workdir all anchored on store.base). They are re-exported here so the
+# runner's public surface (and the test suite's claude_runner.<name> references)
+# keep resolving unchanged.
 from src.store.base import (  # noqa: F401
     _SESSIONS_LOCK,
     _load_dict_store,
@@ -51,11 +51,6 @@ from src.store.base import (  # noqa: F401
     _session_key,
     _sessions_path,
     _sibling_store_path,
-)
-from src.store.consent import (  # noqa: F401
-    grant_write_consent,
-    is_write_active,
-    write_expiry,
 )
 from src.store.crons import (  # noqa: F401
     _crons_path,

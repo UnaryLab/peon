@@ -23,10 +23,9 @@ peon/                          project root
       __init__.py              public store surface used by app + both runners
       base.py                  single source of truth: shared lock (_SESSIONS_LOCK), path resolution (_sessions_path/_sibling_store_path), dict load/save, _resolve_path seam
       sessions.py              sessions.json: (agent, thread) -> session_id (get/set/get_or_create)
-      overrides.py             overrides.json: (agent, thread) -> {model?, effort?, write?, write_expires_at?}
+      overrides.py             overrides.json: (agent, thread) -> {model?, effort?}
       crons.py                 crons.json: list of cron entries (add/list/remove/set_enabled)
-      consent.py               TTL write grant: grant_write_consent / is_write_active / write_expiry
-      workdir.py               get_workdir: per-thread isolated write workdir path scheme
+      workdir.py               get_workdir: per-thread workdir path scheme (the run's cwd)
     runners/                   the runner subpackage
       __init__.py              get_runner(backend) -> the runner facade module (claude or codex); the answer-seam contract
       claude.py                Claude-only runner internals: argv (build_command), run_claude, streaming, answer
@@ -38,9 +37,8 @@ peon/                          project root
       __init__.py              package note; app.py facade re-exports from here
       app.py                   Bolt + Socket Mode build/reconcile/main + signal handling (one App per agent, one process)
       handlers.py              mention/message dispatch: _handle, _run_and_update, the streaming updater
-      control.py               !model/!effort/!reset/!write/!cron + !stop interrupt dispatcher (CONTROL_RE)
+      control.py               !model/!effort/!reset/!cron + !stop interrupt dispatcher (CONTROL_RE)
       interrupt.py             !stop run-interrupt registry + phrase matcher (per-thread Interrupt tokens)
-      consent.py               write-mode consent: !write + Block Kit Approve/Deny buttons + allowlist/TTL gate
       scheduler.py             in-process cron loop (_scheduler_tick) + cron_matches
       files.py                 attachment download (inbound) / upload (outbound)
       usage.py                 _format_usage / _usage_enabled (SHOW_USAGE footer)
@@ -61,7 +59,7 @@ imports are relative, so the package directory name is not hardcoded in the code
 
 Three module paths are thin **facades** over the split-out implementation:
 `src/runners/claude_runner.py` (re-exports `src/runners/claude.py` +
-`common.seen_before` + the whole `src/store/*` surface), `src/runners/codex_runner.py`
+`common.{seen_before, Interrupt}` + the whole `src/store/*` surface), `src/runners/codex_runner.py`
 (re-exports `src/runners/codex.py`), and `src/app.py` (re-exports `src/slack/*`).
 The split is behavior-preserving: the verified CLI invocations and the public
 seam are unchanged.
@@ -105,7 +103,7 @@ answer(agent, prompt, prior_session_id, overrides=None, on_update=None, cancel=N
 `prior_session_id` is the stored session id for this `(agent, thread)` key (or
 `None` on the first message), and the returned `session_id_to_store` is whatever
 the caller must persist for resumes. `overrides` is the per-thread
-model/effort/write dict (see [Per-thread stores](#per-thread-stores)); `on_update`
+model/effort override dict (see [Per-thread stores](#per-thread-stores)); `on_update`
 is an optional `on_update(partial_text)` callback for streaming; `cancel` is an
 optional `Interrupt` token so a `!stop` can SIGINT the streaming subprocess (see
 [Run interrupt](#run-interrupt-stop)); `meta` is the
@@ -130,7 +128,7 @@ thread_ts)` for **every** backend, so contexts stay independent (see below).
 ## The verified claude invocation (per agent)
 
 `build_command` (the logic lives in `src/runners/claude.py`, re-exported by the
-`claude_runner` facade) produces exactly these argv lists (claude CLI 2.1.186,
+`claude_runner` facade) produces exactly these argv lists (claude CLI 2.1.187,
 all empirically verified to work):
 
 The model and effort come from each agent's `agents.json` entry. The shipped
@@ -144,34 +142,31 @@ change either, edit that agent's `agents.json` entry (e.g. `"effort": "high"` or
 
 ```
 # Aristotle, new thread:
-claude -p --output-format json --session-id <uuid> --agent unarylab-research:research_manager --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --session-id <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
 # Aristotle, continuing the same thread:
-claude -p --output-format json --resume <uuid> --agent unarylab-research:research_manager --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --resume <uuid> --agent unarylab-research:research_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
 
 # Brunel, new / resume (same shape, different agent):
-claude -p --output-format json --session-id <uuid> --agent unarylab-research:project_manager --model claude-opus-4-8[1m] "<prompt>"
-claude -p --output-format json --resume     <uuid> --agent unarylab-research:project_manager --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --session-id <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --resume     <uuid> --agent unarylab-research:project_manager --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
 
 # Cicero (general/default run: NO --agent flag):
-claude -p --output-format json --session-id <uuid> --model claude-opus-4-8[1m] "<prompt>"
-claude -p --output-format json --resume     <uuid> --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --session-id <uuid> --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
+claude -p --output-format json --resume     <uuid> --permission-mode bypassPermissions --model claude-opus-4-8[1m] "<prompt>"
 ```
 
 `--output-format json` makes stdout a single JSON object; we read the `result`
 field for the reply and check `is_error` plus the exit code for failures.
+`--permission-mode bypassPermissions` runs the agent fully unsandboxed (see
+[Per-thread workdir](#per-thread-workdir)); it sits between `--agent` and
+`--model` on both fresh and resume runs.
 
-**Feature-conditioned argv (still exact, asserted in lockstep).** The argv above
-is the read-only, non-streaming path and is byte-identical to the pre-feature
-code. Two features add flags:
-- **Streaming** (`STREAM_OUTPUT` on, the run-time default): `--output-format
-  json` becomes `--output-format stream-json --include-partial-messages
-  --verbose` (in `-p` mode `stream-json` REQUIRES `--verbose`). stdout is then
-  JSONL; the terminal `result` event has the SAME shape as the single-blob JSON,
-  so meta parsing is shared. `STREAM_OUTPUT=0` restores the exact argv above.
-- **Write-mode** ([active grant](#write-mode-and-workdir-isolation)): adds
-  `--permission-mode acceptEdits --add-dir <workdir>` (the least-privilege
-  non-interactive tool mode, confined to the thread's isolated workdir, which is
-  also set as the subprocess cwd). Off by default, so the argv stays read-only.
+**The one argv switch (still exact, asserted in lockstep).** With `STREAM_OUTPUT`
+on (the run-time default), `--output-format json` becomes `--output-format
+stream-json --include-partial-messages --verbose` (in `-p` mode `stream-json`
+REQUIRES `--verbose`). stdout is then JSONL; the terminal `result` event has the
+SAME shape as the single-blob JSON, so meta parsing is shared. `STREAM_OUTPUT=0`
+restores the exact argv above.
 
 Note on `--agent` and `--resume`: we include `--agent` on **both** new and
 resume runs when the agent has one. Resume was verified to work, and repeating
@@ -187,21 +182,19 @@ run captures it from stdout; a resume passes it back:
 
 ```
 # Dijkstra, fresh run (mints a thread_id; reply is written to the -o file):
-codex exec --json --skip-git-repo-check -s read-only -o <last_message_file> "<prompt>"
+codex exec --json --skip-git-repo-check -s danger-full-access -o <last_message_file> "<prompt>"
 # Dijkstra, continuing the same thread (resume by the captured thread_id):
-codex exec resume <thread_id> --json --skip-git-repo-check -c sandbox_mode=read-only -o <last_message_file> "<prompt>"
+codex exec resume <thread_id> --json --skip-git-repo-check -c sandbox_mode=danger-full-access -o <last_message_file> "<prompt>"
 ```
 
 Details:
 
 - `--skip-git-repo-check` is **required** (this project is not a git repo).
-- These are chat agents, not coding agents, so the sandbox is `read-only`
-  (safest) by default. On a fresh run that is `-s read-only`; on a `resume` run
-  (which does **not** accept `-s/--sandbox`) it is `-c sandbox_mode=read-only`
-  (raw enum string; do not TOML-quote it). When [write-mode](#write-mode-and-workdir-isolation) is
-  active for the thread, that value flips to `workspace-write` (both forms) and the
-  runner sets the subprocess cwd to the thread's isolated workdir; off by default,
-  so the argv stays read-only and byte-identical.
+- The run is fully unsandboxed (see [Per-thread workdir](#per-thread-workdir)).
+  On a fresh run that is `-s danger-full-access`; on a `resume` run (which does
+  **not** accept `-s/--sandbox`) it is `-c sandbox_mode=danger-full-access` (raw
+  enum string; do not TOML-quote it). The runner sets the subprocess cwd to the
+  thread's workdir.
 - Streaming: codex ALREADY emits JSONL via `--json`, so `STREAM_OUTPUT` changes
   only HOW stdout is consumed (line-by-line vs. all-at-once), never the argv. The
   `-o` file stays the authoritative final reply on both paths.
@@ -265,7 +258,7 @@ across processes (marked with a `# ponytail:` comment in the code).
 vendor-neutral `src/store/` package (`store.base` is the single source of truth
 for the shared lock `_SESSIONS_LOCK` and the path resolution `_sessions_path` /
 `_sibling_store_path`; `sessions.py` / `overrides.py` / `crons.py` /
-`consent.py` / `workdir.py` are the per-store modules). The `claude_runner`
+`workdir.py` are the per-store modules). The `claude_runner`
 facade re-exports all of them for back-compat. They all sit beside
 `sessions.json` via `_sibling_store_path(<name>)`, so the single `SESSIONS_PATH`
 env var redirects every store at once (no per-store env var). The dict-shaped
@@ -273,9 +266,8 @@ stores share `_load_dict_store`/`_save_dict_store`; the list-shaped cron store h
 its own load/save:
 
 - **`sessions.json`** (dict): `(agent, thread) -> session_id`, above.
-- **`overrides.json`** (dict): `(agent, thread) -> {model?, effort?, write?,
-  write_expires_at?}`. Set by the `!model`/`!effort`/`!write`/`!reset` control
-  phrases; `write` + `write_expires_at` back the TTL-bounded write grant.
+- **`overrides.json`** (dict): `(agent, thread) -> {model?, effort?}`. Set by the
+  `!model`/`!effort`/`!reset` control phrases.
 - **`crons.json`** (list): `{id, schedule, agent, channel, thread_ts, prompt,
   enabled}` entries (see [Cron](#cron-slack-native-in-process)).
 
@@ -298,7 +290,7 @@ model's window (1M for a `[1m]` model id, else 200k). For codex `cost_usd` and
 from token-usage events and `duration_s` is wall-clock. When `SHOW_USAGE` is
 truthy, `app._format_usage(meta)` renders a one-line `· N% · X tok · $Y · Zs`
 footer under the reply, dropping any `None` field; an all-`None` meta yields no
-footer. Default OFF; read live, so a SIGHUP `.env` reload toggles it.
+footer. Default ON; read live, so a SIGHUP `.env` reload toggles it.
 
 ## Streaming (`STREAM_OUTPUT`)
 
@@ -315,11 +307,10 @@ for the argv impact (claude: streaming flags; codex: none).
 ## Control phrases (one dispatcher)
 
 `app._handle_control_phrase` is the single parser/dispatcher: it matches
-`CONTROL_RE` (`^!(model|effort|reset|write|cron)\b ...`) on the de-mentioned
+`CONTROL_RE` (`^!(model|effort|reset|cron)\b ...`) on the de-mentioned
 prompt and routes to the right handler. A handled phrase acks into the thread and
 does NOT run the agent (the agent runs only for a non-`!` message). `!model
-<id>` / `!effort <level>` / `!reset` mutate `overrides.json`; `!write
-on|off|status` toggles write-mode (ON gated by consent); `!cron
+<id>` / `!effort <level>` / `!reset` mutate `overrides.json`; `!cron
 add|list|remove|on|off` mutates `crons.json`. Ahead of the `!`-gate the dispatcher
 also matches the interrupt phrases (`!stop` / bare `stop` / `ctrl-c` / `^c` /
 `interrupt`) and signals the thread's in-flight run (see
@@ -355,33 +346,28 @@ front (always resumable); codex salvages its `thread_id` from the partial stream
 `STREAM_OUTPUT=0` the worker blocks in `subprocess.run` with no handle, so `.proc`
 stays `None` and `!stop` is a no-op (the run finishes or times out on its own).
 
-## Write-mode and workdir isolation
+## Per-thread workdir
 
-Runs are **read-only by default**. A thread gets a read-write tool surface only
-through an explicit, time-boxed consent flow:
+**SECURITY: every run is fully unsandboxed.** The runners always emit claude
+`--permission-mode bypassPermissions` and codex `-s danger-full-access` (fresh) /
+`-c sandbox_mode=danger-full-access` (resume), so an agent can read/write any path
+and run any command. Anyone who can DM/mention a bot can run arbitrary commands as
+the operator; this is a deliberate personal/lab tradeoff, so restrict who can
+reach the bots.
 
-1. `!write on` is accepted only from a principal in `WRITE_ALLOWLIST`
-   (comma-separated Slack user/channel IDs; **fail-closed**: an empty allowlist
-   denies everyone). A non-allowlisted request is refused outright.
-2. An allowlisted request posts Block Kit **Approve/Deny** buttons into the
-   thread (delivered over Socket Mode, so no public request URL; the Slack app
-   manifest must have **interactivity** enabled). Write-mode is NOT on yet.
-3. An allowlisted **Approve** calls `grant_write_consent`, which stores `write:
-   True` + a `write_expires_at` epoch (now + `CONSENT_TTL_MIN` minutes, default
-   2880, i.e. 2 days) in `overrides.json`. `is_write_active` (an injectable-clock read-time
-   gate) is the SINGLE check; on expiry the thread reverts to read-only with no
-   sweep.
+Each run gets a per-thread workdir as its cwd. The worker injects
+`_workdir = get_workdir(agent, thread)` into `overrides`, and both runners set the
+subprocess cwd to it. `get_workdir` builds the path under `WORKDIR_BASE` (default
+`~/Projects/.peon-workdirs`), namespaced by agent + thread, and creates it on
+demand. The default base is an **absolute path OUTSIDE this repo** so a run's
+default cwd is never the framework source; `get_workdir` always returns an
+ABSOLUTE path (the subprocess cwd needs one), so the per-thread workdir lives at
+`<home>/Projects/.peon-workdirs/<agent>/<thread>`. Set `WORKDIR_BASE` to override.
 
-While active, the worker injects an isolated `_workdir` into `overrides`:
-`get_workdir(agent, thread)` under `WORKDIR_BASE` (default
-`~/Projects/.peon-workdirs`), namespaced by agent + thread. The default base is an
-**absolute path OUTSIDE this repo** on purpose: a write-mode agent's edits never
-touch the framework source (`get_workdir` always returns an ABSOLUTE path, since
-the subprocess cwd and claude `--add-dir` need one), so the per-thread workdir
-lives at `<home>/Projects/.peon-workdirs/<agent>/<thread>`. Set `WORKDIR_BASE` to
-override. The runners then relax the sandbox (claude `--permission-mode
-acceptEdits --add-dir`, codex `workspace-write`) and set the subprocess cwd to that
-workdir. `get_workdir` is the single owner of the path scheme, reused by both
+The workdir is the run's cwd/home, not a confinement boundary (the run is
+unsandboxed). Its purpose is the outbound file flow: after a run, files created or
+modified under the workdir (mtime since run start) are uploaded back into the
+thread. `get_workdir` is the single owner of the path scheme, reused by both
 runners and by the outbound file upload.
 
 ## Files in and out
@@ -390,9 +376,9 @@ Inbound: a message's `files[]` are downloaded with the bot token
 (`_http_get_bytes`, stdlib `urllib`, the single mocked HTTP seam) into a
 per-thread temp dir, and their local paths are appended to the prompt so the CLI
 can open them. Outbound: after the run, files created/modified in the thread's
-write workdir (mtime at or after the run start) are uploaded back into the thread via
+workdir (mtime at or after the run start) are uploaded back into the thread via
 `files_upload_v2`. Both need the `files:read` / `files:write` bot scopes. With no
-write workdir configured, the outbound scan is a no-op.
+workdir resolved for the thread, the outbound scan is a no-op.
 
 ## Cron (Slack-native, in-process)
 

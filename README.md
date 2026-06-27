@@ -124,8 +124,8 @@ Each agent is its own Slack bot that you address by name.
    thread, the visible prior thread messages are included in its prompt, so it can
    read another agent's Slack-visible output in that same thread.
 5. **Send and receive files.** Attach files to your message and the agent can
-   read them (their paths are passed to the CLI). If the agent produces files
-   while write-mode is on, they are uploaded back into the thread. (This needs the
+   read them (their paths are passed to the CLI). Files the agent produces in its
+   per-thread workdir are uploaded back into the thread. (This needs the
    `files:read` / `files:write` scopes, see [Prerequisites](#prerequisites).)
 6. **See usage.** If the operator set `SHOW_USAGE`, each reply ends with a small
    one-line footer (context %, tokens, cost, duration); fields that a backend does
@@ -141,24 +141,21 @@ mention:
 |---------|----------------------------------------|
 | `!model <model-id>` | Override the model for this thread. |
 | `!effort <low\|medium\|high\|xhigh\|max>` | Override the reasoning effort. |
-| `!reset` | Clear this thread's overrides (back to defaults, read-only). |
+| `!reset` | Clear this thread's overrides (back to defaults). |
 | `!stop` (or `stop`, `interrupt`, `ctrl-c`) | Interrupt the run in flight in this thread (the Ctrl-C analog): SIGINTs the streaming CLI and settles with the partial reply, marked `_(interrupted)_`. The thread stays resumable. Streaming only; a no-op under `STREAM_OUTPUT=0`. |
-| `!write on` | Request the read-write tool surface. Allowed only for an operator-allowlisted user/channel; posts Approve/Deny buttons, and write-mode turns on for a bounded time only after an allowlisted user clicks Approve. |
-| `!write off` | Turn write-mode off (always allowed). |
-| `!write status` | Report whether write-mode is on and roughly how long is left. |
 | `!cron add "<min hour dom month dow>" <prompt>` | Schedule a recurring run of `<prompt>` in this thread. |
 | `!cron list` | List scheduled crons. |
 | `!cron remove <id>` / `!cron on <id>` / `!cron off <id>` | Delete / enable / disable a cron by id. |
 
-**Write-mode is read-only by default and gated.** Turning it on takes both an
-operator allowlist (`WRITE_ALLOWLIST`) and an Approve click; edits are confined to
-an isolated per-thread directory (default `~/Projects/.peon-workdirs`, an absolute
-path OUTSIDE the repo so a write-mode agent's edits never touch the framework
-source; set `WORKDIR_BASE` to override the
-default), and the grant expires after `CONSENT_TTL_MIN` minutes. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for the full
-safety model. These knobs (`SHOW_USAGE`, `STREAM_OUTPUT`, `WRITE_ALLOWLIST`,
-`WORKDIR_BASE`, `CONSENT_TTL_MIN`) are all set in `.env`; see `.env.example`.
+**SECURITY: agents run with full unsandboxed machine access.** Every agent runs
+FULLY UNSANDBOXED (claude `--permission-mode bypassPermissions`, codex
+`-s danger-full-access`): any Slack-reachable agent has full read/write access to
+the host machine (any path, any command) with no approval step. This is deliberate
+for a personal/lab deployment; restrict who can reach the bots accordingly. Each
+thread runs in its own per-thread workdir (default `~/Projects/.peon-workdirs`, set
+`WORKDIR_BASE` to override) as the run's cwd, so files it produces are uploaded
+back into the thread. The live knobs (`SHOW_USAGE`, `STREAM_OUTPUT`,
+`WORKDIR_BASE`) are set in `.env`; see `.env.example`.
 
 **What triggers a response:**
 
@@ -171,6 +168,10 @@ safety model. These knobs (`SHOW_USAGE`, `STREAM_OUTPUT`, `WRITE_ALLOWLIST`,
   only agents that already have a session in that thread. @-mention another agent
   to bring it into the thread; it will receive the visible thread history as
   context.
+- Agents never trigger each other. Any message posted by a bot (including one that
+  @-mentions another agent) is ignored, so only a human message wakes an agent. To
+  hand a thread to another agent, @-mention it yourself; there is no autonomous
+  bot-to-bot relay (and so no bot-to-bot loops).
 
 ## How to add a new agent (e.g. Euclid)
 
@@ -253,12 +254,12 @@ means that agent is treated as not-yet-startable until the next reload.
 1. **The `claude` CLI** (for the claude-backed agents), installed and
    authenticated, with the `unarylab-research` plugin available (so `--agent
    unarylab-research:project_manager` resolves). Verified against claude CLI
-   2.1.186.
+   2.1.187.
 1b. **The `codex` CLI** (only if a Codex-backed agent like Dijkstra is configured),
    installed, authenticated, and on `PATH`. Verified against codex-cli 0.141.0.
    Both CLIs just need to be on `PATH`, so this works the same on Linux and
-   macOS (Codex's own OS-level sandbox backend differs by platform, but our
-   read-only invocation is identical on both).
+   macOS. (Runs are fully unsandboxed on both: codex `-s danger-full-access`,
+   claude `--permission-mode bypassPermissions`.)
 2. **One Slack app per agent (with Socket Mode enabled).** For each of Aristotle,
    Brunel, Cicero, Dijkstra, create a separate app from its manifest, which you
    generate from `agents.json` with `python -m src manifest <name>` (Slack:
@@ -271,9 +272,6 @@ means that agent is treated as not-yet-startable until the next reload.
      can read attachments and upload files it produces.
    - **Event subscriptions** (already in the manifest): `app_mention` (and
      `message.channels`, `message.groups`, `message.im` for thread follow-ups).
-   - **Interactivity** (already in the manifest): enabled, so the write-mode
-     Approve/Deny consent buttons work. They arrive over Socket Mode, so NO public
-     request URL is needed; interactivity just has to be turned on.
    - **Socket Mode**: enabled. Create an **App-Level Token** (Basic Information
      -> App-Level Tokens) with the `connections:write` scope (`xapp-...`).
    - Install the app to your workspace to get its **Bot User OAuth Token**
@@ -308,7 +306,7 @@ but that a service manager (launchd/systemd) does NOT inherit here, rather than
 hardcoding it into the OS-specific `deploy/` templates: e.g. `OBSIDIAN_VAULT_PATH`
 for the `obsidian-*` research skills, set to your vault root (the folder
 containing `research/`). Web tools are gated by the CLI itself, not by peon, and a
-headless read-only run cannot prompt for permission, so pre-approve them once: for
+headless run cannot prompt for permission, so pre-approve them once: for
 Claude, add `WebSearch` / `WebFetch` to `permissions.allow` in
 `~/.claude/settings.json`; for Codex, set `[tools] web_search = true` in
 `~/.codex/config.toml`.

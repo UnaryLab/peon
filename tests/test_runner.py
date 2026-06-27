@@ -213,6 +213,8 @@ def test_build_command_brunel_new_and_resume(monkeypatch):
         SID,
         "--agent",
         "unarylab-research:project_manager",
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -226,6 +228,8 @@ def test_build_command_brunel_new_and_resume(monkeypatch):
         SID,
         "--agent",
         "unarylab-research:project_manager",
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -245,6 +249,8 @@ def test_build_command_aristotle_new_and_resume(monkeypatch):
         SID,
         "--agent",
         "unarylab-research:research_manager",
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -258,6 +264,8 @@ def test_build_command_aristotle_new_and_resume(monkeypatch):
         SID,
         "--agent",
         "unarylab-research:research_manager",
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -275,6 +283,8 @@ def test_build_command_cicero_has_no_agent_flag(monkeypatch):
         "json",
         "--session-id",
         SID,
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -286,6 +296,8 @@ def test_build_command_cicero_has_no_agent_flag(monkeypatch):
         "json",
         "--resume",
         SID,
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -338,6 +350,8 @@ def test_build_command_effort_from_agents_json_field_new_and_resume(monkeypatch)
         SID,
         "--agent",
         "unarylab-research:project_manager",
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         "--effort",
@@ -354,6 +368,8 @@ def test_build_command_effort_from_agents_json_field_new_and_resume(monkeypatch)
         SID,
         "--agent",
         "unarylab-research:project_manager",
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         "--effort",
@@ -459,183 +475,6 @@ def test_build_command_overrides_none_or_empty_is_byte_identical(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# build_command: per-thread WRITE-MODE (read-write tool surface). Default OFF.
-# When OFF (no "write" key, or write=False) the argv is byte-identical to the
-# read-only default. When ON, claude gets --permission-mode acceptEdits +
-# --add-dir <workdir>; codex swaps -s read-only -> -s workspace-write (fresh) and
-# sandbox_mode=read-only -> sandbox_mode=workspace-write (resume). The workdir
-# flows in via overrides["_workdir"]
-# (injected by app.py from get_workdir); the store never persists it.
-# ---------------------------------------------------------------------------
-
-WORKDIR = "/tmp/peon-workdirs/aristotle/T1"
-
-
-def test_build_command_write_off_byte_identical_claude(monkeypatch):
-    # write absent / write=False => argv identical to the read-only default path.
-    _clear_model_effort_env(monkeypatch)
-    base = claude_runner.build_command(BRUNEL, PROMPT, SID, True)
-    assert (
-        claude_runner.build_command(
-            BRUNEL, PROMPT, SID, True, overrides={"model": "", "effort": ""}
-        )
-        == base
-    )
-    assert (
-        claude_runner.build_command(
-            BRUNEL, PROMPT, SID, True, overrides={"write": False, "_workdir": WORKDIR}
-        )
-        == base
-    )
-    # write True but NO workdir => still read-only (cannot enable tools without a
-    # confined dir), so byte-identical.
-    assert (
-        claude_runner.build_command(
-            BRUNEL, PROMPT, SID, True, overrides={"write": True}
-        )
-        == base
-    )
-    for argv in (base,):
-        assert "--permission-mode" not in argv
-        assert "--add-dir" not in argv
-
-
-def test_build_command_write_on_claude_new_and_resume(monkeypatch):
-    # write=True + a workdir => add --permission-mode acceptEdits and --add-dir
-    # <workdir>, on BOTH new and resume. Exact argv.
-    _clear_model_effort_env(monkeypatch)
-    over = {"write": True, "_workdir": WORKDIR}
-    new_argv = claude_runner.build_command(BRUNEL, PROMPT, SID, True, overrides=over)
-    assert new_argv == [
-        "claude",
-        "-p",
-        "--output-format",
-        "json",
-        "--session-id",
-        SID,
-        "--agent",
-        "unarylab-research:project_manager",
-        "--permission-mode",
-        "acceptEdits",
-        "--add-dir",
-        WORKDIR,
-        "--model",
-        MODEL,
-        PROMPT,
-    ]
-    resume_argv = claude_runner.build_command(
-        BRUNEL, PROMPT, SID, False, overrides=over
-    )
-    assert resume_argv == [
-        "claude",
-        "-p",
-        "--output-format",
-        "json",
-        "--resume",
-        SID,
-        "--agent",
-        "unarylab-research:project_manager",
-        "--permission-mode",
-        "acceptEdits",
-        "--add-dir",
-        WORKDIR,
-        "--model",
-        MODEL,
-        PROMPT,
-    ]
-
-
-def test_build_command_write_on_claude_does_not_disable_task_subagent(monkeypatch):
-    # Enabling tools (acceptEdits) unblocks claude's native sub-agent (Task tool).
-    # We must NOT add any tool-restriction flag that would disable it: no
-    # --disallowedTools, no --allowedTools allowlist (which would exclude Task),
-    # and no bypass mode. acceptEdits is the least-privilege non-interactive mode.
-    _clear_model_effort_env(monkeypatch)
-    argv = claude_runner.build_command(
-        BRUNEL, PROMPT, SID, True, overrides={"write": True, "_workdir": WORKDIR}
-    )
-    for forbidden in (
-        "--disallowedTools",
-        "--disallowed-tools",
-        "--allowedTools",
-        "--allowed-tools",
-        "--dangerously-skip-permissions",
-    ):
-        assert forbidden not in argv
-    # The enabling flag is the least-privilege acceptEdits, not bypassPermissions.
-    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
-
-
-def test_build_command_write_off_byte_identical_codex(monkeypatch):
-    # codex write OFF => argv identical to the read-only default (fresh + resume).
-    _clear_model_effort_env(monkeypatch)
-    fresh_ro = codex_runner.build_command(DIJKSTRA, PROMPT, None, True, LASTMSG)
-    resume_ro = codex_runner.build_command(DIJKSTRA, PROMPT, THREAD_ID, False, LASTMSG)
-    assert (
-        codex_runner.build_command(
-            DIJKSTRA, PROMPT, None, True, LASTMSG, overrides={"write": False}
-        )
-        == fresh_ro
-    )
-    assert (
-        codex_runner.build_command(
-            DIJKSTRA, PROMPT, THREAD_ID, False, LASTMSG, overrides={"write": False}
-        )
-        == resume_ro
-    )
-    # write True but no workdir => still read-only.
-    assert (
-        codex_runner.build_command(
-            DIJKSTRA, PROMPT, None, True, LASTMSG, overrides={"write": True}
-        )
-        == fresh_ro
-    )
-    assert "-s" in fresh_ro and fresh_ro[fresh_ro.index("-s") + 1] == "read-only"
-
-
-def test_codex_build_command_write_on_fresh(monkeypatch):
-    # write ON, fresh: -s workspace-write replaces -s read-only. Exact argv.
-    _clear_model_effort_env(monkeypatch)
-    over = {"write": True, "_workdir": WORKDIR}
-    fresh = codex_runner.build_command(
-        DIJKSTRA, PROMPT, None, True, LASTMSG, overrides=over
-    )
-    assert fresh == [
-        "codex",
-        "exec",
-        "--json",
-        "--skip-git-repo-check",
-        "-s",
-        "workspace-write",
-        "-o",
-        LASTMSG,
-        PROMPT,
-    ]
-
-
-def test_codex_build_command_write_on_resume(monkeypatch):
-    # write ON, resume: the -c sandbox_mode value flips to workspace-write. Exact argv.
-    _clear_model_effort_env(monkeypatch)
-    over = {"write": True, "_workdir": WORKDIR}
-    resume = codex_runner.build_command(
-        DIJKSTRA, PROMPT, THREAD_ID, False, LASTMSG, overrides=over
-    )
-    assert resume == [
-        "codex",
-        "exec",
-        "resume",
-        THREAD_ID,
-        "--json",
-        "--skip-git-repo-check",
-        "-c",
-        "sandbox_mode=workspace-write",
-        "-o",
-        LASTMSG,
-        PROMPT,
-    ]
-
-
-# ---------------------------------------------------------------------------
 # get_or_create_session: persistence + independent contexts
 # ---------------------------------------------------------------------------
 
@@ -722,30 +561,10 @@ def test_overrides_path_from_env_redirects_store(monkeypatch, tmp_path):
     assert data["aristotle:1.23"] == {"model": "x-model"}
 
 
-def test_override_write_flag_round_trip(tmp_path):
-    # The write-mode flag is stored in the SAME overrides entry as model/effort
-    # (one unified per-thread store), merging with any existing fields.
-    store = str(tmp_path / "overrides.json")
-    claude_runner.set_override(
-        "aristotle", "T1", "model", "claude-sonnet-4-6", path=store
-    )
-    claude_runner.set_override("aristotle", "T1", "write", True, path=store)
-    assert claude_runner.get_override("aristotle", "T1", path=store) == {
-        "model": "claude-sonnet-4-6",
-        "write": True,
-    }
-    # Turning write off merges (model preserved).
-    claude_runner.set_override("aristotle", "T1", "write", False, path=store)
-    assert claude_runner.get_override("aristotle", "T1", path=store) == {
-        "model": "claude-sonnet-4-6",
-        "write": False,
-    }
-
-
 # ---------------------------------------------------------------------------
-# get_workdir: per-(agent, thread) isolated read-write directory under
-# WORKDIR_BASE (env, default ~/Projects/.peon-workdirs, absolute and OUTSIDE the
-# repo). Namespaced by agent + thread, created on demand, always ABSOLUTE.
+# get_workdir: per-(agent, thread) directory under WORKDIR_BASE (env, default
+# ~/Projects/.peon-workdirs, absolute and OUTSIDE the repo). Namespaced by agent +
+# thread, created on demand, always ABSOLUTE.
 # ---------------------------------------------------------------------------
 
 
@@ -785,9 +604,9 @@ def test_get_workdir_returns_absolute_path(monkeypatch, tmp_path):
 
 def test_get_workdir_default_base_is_under_home_projects(monkeypatch, tmp_path):
     # With WORKDIR_BASE unset the default base is ~/Projects/.peon-workdirs, an
-    # ABSOLUTE path OUTSIDE the project repo (read-write isolation: a write-mode
-    # agent's edits never touch the framework source). No chdir needed since the
-    # default is absolute; create defaults False so nothing is written regardless.
+    # ABSOLUTE path OUTSIDE the project repo (so a run's default cwd is never the
+    # framework source). No chdir needed since the default is absolute; create
+    # defaults False so nothing is written regardless.
     monkeypatch.delenv("WORKDIR_BASE", raising=False)
     path = claude_runner.get_workdir("aristotle", "T1")
     # (a) absolute.
@@ -967,7 +786,7 @@ def test_codex_build_command_fresh(monkeypatch):
         "--json",
         "--skip-git-repo-check",
         "-s",
-        "read-only",
+        "danger-full-access",
         "-o",
         LASTMSG,
         PROMPT,
@@ -985,7 +804,7 @@ def test_codex_build_command_resume(monkeypatch):
         "--json",
         "--skip-git-repo-check",
         "-c",
-        "sandbox_mode=read-only",
+        "sandbox_mode=danger-full-access",
         "-o",
         LASTMSG,
         PROMPT,
@@ -2087,37 +1906,6 @@ def _fake_say():
     return _FakeSay()
 
 
-class _BlockSay:
-    """Like _FakeSay but also captures `blocks` (Block Kit), used by consent tests.
-
-    Slack's `say` accepts a `blocks=` list alongside `text=`; the consent request
-    posts buttons via blocks, so this records them so a test can assert the
-    Approve/Deny action ids are present.
-    """
-
-    def __init__(self):
-        self.posts = []
-
-    def __call__(self, text=None, thread_ts=None, blocks=None):
-        self.posts.append({"text": text, "thread_ts": thread_ts, "blocks": blocks})
-        return {"ts": "placeholder-ts"}
-
-
-def _action_ids(blocks):
-    """Collect every action_id from a Block Kit blocks list (or [] if None).
-
-    Walks an `actions` block's `elements` (buttons) and returns their action_ids,
-    so a test can assert the consent buttons were attached.
-    """
-    found = []
-    for block in blocks or []:
-        for el in block.get("elements", []) if isinstance(block, dict) else []:
-            aid = el.get("action_id") if isinstance(el, dict) else None
-            if aid:
-                found.append(aid)
-    return found
-
-
 _CONTROL_AGENT = {
     "name": "aristotle",
     "display_name": "Aristotle",
@@ -2226,71 +2014,13 @@ def test_control_phrase_non_command_returns_false(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# WRITE-MODE control phrase + allowlist gate. Only an allowlisted principal (its
-# Slack user id OR channel id in WRITE_ALLOWLIST) may turn write-mode ON. A
-# non-allowlisted enable is refused and the thread stays read-only. The flag lives
-# in the same per-thread overrides store; app.py injects the isolated workdir at
-# run time.
+# Worker run: per-thread workdir injection + identity prepend.
 # ---------------------------------------------------------------------------
 
 
-def test_is_write_allowed_user_or_channel(monkeypatch):
-    from src import app as appmod
-
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK, C_OK")
-    assert appmod._is_write_allowed("U_OK", "C_NOPE") is True  # user matches
-    assert appmod._is_write_allowed("U_NOPE", "C_OK") is True  # channel matches
-    assert appmod._is_write_allowed("U_NOPE", "C_NOPE") is False  # neither
-    # Empty/unset allowlist denies everyone (write is opt-in, fail-closed).
-    monkeypatch.delenv("WRITE_ALLOWLIST", raising=False)
-    assert appmod._is_write_allowed("U_OK", "C_OK") is False
-    monkeypatch.setenv("WRITE_ALLOWLIST", "")
-    assert appmod._is_write_allowed("U_OK", "C_OK") is False
-
-
-def test_control_phrase_write_on_denied_keeps_read_only(monkeypatch, tmp_path):
-    from src import app as appmod
-
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")  # the requester is NOT in it
-    say = _fake_say()
-
-    handled = appmod._handle_control_phrase(
-        _CONTROL_AGENT, "!write on", "T1", say, user_id="U_NOPE", channel_id="C_NOPE"
-    )
-    assert handled is True  # still a control phrase (handled), just refused
-    # Store UNCHANGED: the thread stays read-only.
-    assert claude_runner.get_override("aristotle", "T1", path=store) is None
-    assert len(say.posts) == 1
-    # The ack explains the refusal.
-    assert "not allowed" in say.posts[0]["text"].lower() or (
-        "allowlist" in say.posts[0]["text"].lower()
-    )
-
-
-def test_control_phrase_write_off_disables(monkeypatch, tmp_path):
-    from src import app as appmod
-
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")
-    monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
-    claude_runner.set_override("aristotle", "T1", "write", True, path=store)
-    say = _fake_say()
-
-    # Turning write OFF needs no allowlist (only enabling is gated).
-    handled = appmod._handle_control_phrase(
-        _CONTROL_AGENT, "!write off", "T1", say, user_id="U_NOPE", channel_id="C_NOPE"
-    )
-    assert handled is True
-    assert claude_runner.get_override("aristotle", "T1", path=store) == {"write": False}
-
-
-def test_run_and_update_injects_workdir_only_when_write_on(monkeypatch, tmp_path):
-    # The worker injects overrides["_workdir"] (an isolated, created dir) ONLY when
-    # the thread's stored write flag is True; a read-only thread passes no workdir,
-    # so the default read-only argv is preserved. We capture what reaches the runner.
+def test_run_and_update_always_injects_workdir(monkeypatch, tmp_path):
+    # The worker always injects the per-thread, created _workdir into overrides so
+    # the run has a home dir and the outbound file-upload-back works.
     if not _HAVE_APP:
         return
     assert _appmod is not None
@@ -2299,7 +2029,7 @@ def test_run_and_update_injects_workdir_only_when_write_on(monkeypatch, tmp_path
     monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
     monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
     monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
-    monkeypatch.setenv("STREAM_OUTPUT", "0")  # no incremental updates in this test
+    monkeypatch.setenv("STREAM_OUTPUT", "0")
 
     captured = {}
 
@@ -2319,18 +2049,11 @@ def test_run_and_update_injects_workdir_only_when_write_on(monkeypatch, tmp_path
     monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
     client = _Client()
 
-    # Read-only thread: no _workdir injected.
-    _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "hi", "T_ro")
-    assert "_workdir" not in (captured["overrides"] or {})
-
-    # Write-on thread: _workdir injected, pointing at the isolated created dir.
-    claude_runner.set_override("aristotle", "T_rw", "write", True, path=overrides)
-    _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "hi", "T_rw")
+    _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "hi", "T_full")
     over = captured["overrides"]
-    assert over.get("write") is True
     wd = over.get("_workdir")
     assert wd and os.path.isdir(wd)
-    assert wd == claude_runner.get_workdir("aristotle", "T_rw")
+    assert wd == claude_runner.get_workdir("aristotle", "T_full")
 
 
 def test_run_and_update_injects_identity_every_turn(monkeypatch, tmp_path):
@@ -2376,355 +2099,6 @@ def test_run_and_update_injects_identity_every_turn(monkeypatch, tmp_path):
     _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "who are you", "T_old")
     assert "Aristotle" in captured["prompt"]
     assert captured["prompt"].endswith("who are you")
-
-
-# ---------------------------------------------------------------------------
-# COARSE CONSENT GATING (Block Kit Approve/Deny over Socket Mode) with a TTL.
-# `!write on` from an allowlisted user no longer flips write-mode directly: it
-# posts a consent request with buttons. An allowlisted Approve grants write-mode
-# for CONSENT_TTL_MIN minutes (an expiry stored alongside the flag); on/after the
-# expiry the thread reverts to read-only automatically. Deny, or a click by a
-# non-allowlisted user, leaves the thread read-only. The TTL uses an INJECTED
-# clock (now=) so the tests are hermetic (no sleep, no real wall-clock).
-# ---------------------------------------------------------------------------
-
-
-def test_grant_write_consent_stores_flag_and_expiry(monkeypatch, tmp_path):
-    store = str(tmp_path / "overrides.json")
-    # Inject a fixed clock: expiry must be now + ttl*60.
-    claude_runner.grant_write_consent(
-        "aristotle", "T1", ttl_minutes=30, now=lambda: 1000.0, path=store
-    )
-    entry = claude_runner.get_override("aristotle", "T1", path=store)
-    assert entry == {"write": True, "write_expires_at": 1000.0 + 30 * 60}
-
-
-def test_is_write_active_true_before_expiry_false_after(monkeypatch, tmp_path):
-    store = str(tmp_path / "overrides.json")
-    claude_runner.grant_write_consent(
-        "aristotle", "T1", ttl_minutes=30, now=lambda: 1000.0, path=store
-    )
-    # Just before expiry -> active.
-    assert (
-        claude_runner.is_write_active(
-            "aristotle", "T1", now=lambda: 1000.0 + 30 * 60 - 1, path=store
-        )
-        is True
-    )
-    # At/after expiry -> inactive (reverted to read-only automatically).
-    assert (
-        claude_runner.is_write_active(
-            "aristotle", "T1", now=lambda: 1000.0 + 30 * 60, path=store
-        )
-        is False
-    )
-    assert (
-        claude_runner.is_write_active(
-            "aristotle", "T1", now=lambda: 1000.0 + 30 * 60 + 5, path=store
-        )
-        is False
-    )
-
-
-def test_is_write_active_false_when_no_override(monkeypatch, tmp_path):
-    store = str(tmp_path / "overrides.json")
-    # No entry at all -> read-only.
-    assert (
-        claude_runner.is_write_active("aristotle", "T1", now=lambda: 0.0, path=store)
-        is False
-    )
-    # A write=False entry -> read-only regardless of clock.
-    claude_runner.set_override("aristotle", "T1", "write", False, path=store)
-    assert (
-        claude_runner.is_write_active("aristotle", "T1", now=lambda: 0.0, path=store)
-        is False
-    )
-
-
-def test_is_write_active_no_expiry_means_active(monkeypatch, tmp_path):
-    # A write=True with NO write_expires_at (e.g. set by a raw set_override) is
-    # treated as active (no TTL), so the field is purely additive.
-    store = str(tmp_path / "overrides.json")
-    claude_runner.set_override("aristotle", "T1", "write", True, path=store)
-    assert (
-        claude_runner.is_write_active(
-            "aristotle", "T1", now=lambda: 9_999_999.0, path=store
-        )
-        is True
-    )
-
-
-def test_control_phrase_write_on_allowlisted_posts_buttons(monkeypatch, tmp_path):
-    # `!write on` from an allowlisted user posts a Block Kit consent request with
-    # Approve/Deny buttons and does NOT flip write-mode yet (it stays read-only
-    # until someone approves).
-    from src import app as appmod
-
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")
-    say = _BlockSay()
-
-    handled = appmod._handle_control_phrase(
-        _CONTROL_AGENT, "!write on", "T1", say, user_id="U_OK", channel_id="C1"
-    )
-    assert handled is True
-    # NOT yet enabled: consent is pending, the thread is still read-only.
-    assert claude_runner.get_override("aristotle", "T1", path=store) is None
-    assert len(say.posts) == 1
-    post = say.posts[0]
-    assert post["thread_ts"] == "T1"
-    # Block Kit buttons were attached with our two action ids.
-    action_ids = _action_ids(post.get("blocks"))
-    assert appmod._WRITE_APPROVE_ACTION in action_ids
-    assert appmod._WRITE_DENY_ACTION in action_ids
-
-
-def test_control_phrase_write_on_non_allowlisted_refused_no_buttons(
-    monkeypatch, tmp_path
-):
-    # `!write on` from a NON-allowlisted user is refused outright: no buttons.
-    from src import app as appmod
-
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")
-    say = _BlockSay()
-
-    handled = appmod._handle_control_phrase(
-        _CONTROL_AGENT, "!write on", "T1", say, user_id="U_NOPE", channel_id="C_NOPE"
-    )
-    assert handled is True
-    assert claude_runner.get_override("aristotle", "T1", path=store) is None
-    assert len(say.posts) == 1
-    # No buttons in the refusal.
-    assert _action_ids(say.posts[0].get("blocks")) == []
-    assert "not allowed" in (say.posts[0]["text"] or "").lower() or (
-        "allowlist" in (say.posts[0]["text"] or "").lower()
-    )
-
-
-def test_control_phrase_write_status_reports_state(monkeypatch, tmp_path):
-    # `!write status` reports the current write state without changing it.
-    from src import app as appmod
-
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    say = _BlockSay()
-
-    # Read-only by default.
-    handled = appmod._handle_control_phrase(
-        _CONTROL_AGENT, "!write status", "T1", say, user_id="U_OK", channel_id="C1"
-    )
-    assert handled is True
-    assert claude_runner.get_override("aristotle", "T1", path=store) is None
-    assert len(say.posts) == 1
-    assert "read-only" in say.posts[0]["text"].lower()
-
-
-def test_consent_approve_by_allowlisted_enables_write_with_expiry(
-    monkeypatch, tmp_path
-):
-    # Approve clicked by an allowlisted user flips the thread to write-mode for the
-    # configured TTL (expiry = injected now + CONSENT_TTL_MIN*60).
-    from src import app as appmod
-
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")
-    monkeypatch.setenv("CONSENT_TTL_MIN", "30")
-    say = _BlockSay()
-
-    appmod._handle_consent(
-        _CONTROL_AGENT,
-        appmod._WRITE_APPROVE_ACTION,
-        clicker_user_id="U_OK",
-        channel_id="C1",
-        thread_ts="T1",
-        say=say,
-        now=lambda: 2000.0,
-    )
-    entry = claude_runner.get_override("aristotle", "T1", path=store)
-    assert entry == {"write": True, "write_expires_at": 2000.0 + 30 * 60}
-    assert claude_runner.is_write_active(
-        "aristotle", "T1", now=lambda: 2000.0, path=store
-    )
-    assert len(say.posts) == 1
-
-
-def test_consent_approve_by_non_allowlisted_ignored(monkeypatch, tmp_path):
-    # A click by a NON-allowlisted user is ignored: the thread stays read-only.
-    from src import app as appmod
-
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")
-    monkeypatch.setenv("CONSENT_TTL_MIN", "30")
-    say = _BlockSay()
-
-    appmod._handle_consent(
-        _CONTROL_AGENT,
-        appmod._WRITE_APPROVE_ACTION,
-        clicker_user_id="U_NOPE",
-        channel_id="C_NOPE",
-        thread_ts="T1",
-        say=say,
-        now=lambda: 2000.0,
-    )
-    # Store UNCHANGED: still read-only.
-    assert claude_runner.get_override("aristotle", "T1", path=store) is None
-    assert (
-        claude_runner.is_write_active("aristotle", "T1", now=lambda: 2000.0, path=store)
-        is False
-    )
-
-
-def test_consent_deny_keeps_read_only(monkeypatch, tmp_path):
-    # Deny (by an allowlisted user) leaves the thread read-only.
-    from src import app as appmod
-
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")
-    say = _BlockSay()
-
-    appmod._handle_consent(
-        _CONTROL_AGENT,
-        appmod._WRITE_DENY_ACTION,
-        clicker_user_id="U_OK",
-        channel_id="C1",
-        thread_ts="T1",
-        say=say,
-        now=lambda: 2000.0,
-    )
-    assert claude_runner.get_override("aristotle", "T1", path=store) is None
-    assert len(say.posts) == 1
-    assert "den" in say.posts[0]["text"].lower()  # "denied"
-
-
-def test_consent_ttl_minutes_reads_env(monkeypatch, tmp_path):
-    # CONSENT_TTL_MIN is read live; an unset value falls back to the default 2880.
-    from src import app as appmod
-
-    monkeypatch.delenv("CONSENT_TTL_MIN", raising=False)
-    assert appmod._consent_ttl_min() == 2880
-    monkeypatch.setenv("CONSENT_TTL_MIN", "15")
-    assert appmod._consent_ttl_min() == 15
-    # A garbage value falls back to the default rather than crashing.
-    monkeypatch.setenv("CONSENT_TTL_MIN", "not-a-number")
-    assert appmod._consent_ttl_min() == 2880
-
-
-def test_run_and_update_reverts_to_read_only_after_consent_expiry(
-    monkeypatch, tmp_path
-):
-    # The worker injects the workdir only while consent is ACTIVE: an expired grant
-    # passes no _workdir, so the runner's read-only argv is restored automatically.
-    if not _HAVE_APP:
-        return
-    assert _appmod is not None
-    sessions = str(tmp_path / "sessions.json")
-    overrides = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
-    monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
-    monkeypatch.setenv("STREAM_OUTPUT", "0")
-    # Pin the worker's clock so expiry is deterministic.
-    monkeypatch.setattr(_appmod, "_now", lambda: 5000.0)
-
-    captured = {}
-
-    class _Runner:
-        @staticmethod
-        def answer(agent, prompt, prior, overrides=None, on_update=None, cancel=None):
-            captured["overrides"] = overrides
-            return "ok", "sid-1", {}
-
-    class _Client:
-        def chat_update(self, channel=None, ts=None, text=None):
-            return {"ok": True}
-
-        def files_upload_v2(self, **kwargs):
-            return {"ok": True}
-
-    monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
-    client = _Client()
-
-    # Grant consent that ALREADY expired relative to the pinned worker clock.
-    claude_runner.grant_write_consent(
-        "aristotle", "T_exp", ttl_minutes=1, now=lambda: 4000.0, path=overrides
-    )
-    _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "hi", "T_exp")
-    # Expired -> no _workdir injected (read-only argv preserved).
-    assert "_workdir" not in (captured["overrides"] or {})
-
-    # Grant consent still ACTIVE at the pinned worker clock.
-    claude_runner.grant_write_consent(
-        "aristotle", "T_act", ttl_minutes=30, now=lambda: 5000.0, path=overrides
-    )
-    _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "hi", "T_act")
-    over = captured["overrides"]
-    assert over.get("write") is True
-    assert over.get("_workdir") and os.path.isdir(over["_workdir"])
-
-
-def test_on_consent_action_unpacks_payload_and_grants(monkeypatch, tmp_path):
-    # The Bolt-layer adapter unpacks a realistic action `body` (clicker, channel,
-    # action_id, and the button's JSON value carrying agent+thread_ts) and routes
-    # an allowlisted Approve through to a write grant on the right thread.
-    if not _HAVE_APP:
-        return
-    assert _appmod is not None
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")
-    monkeypatch.setenv("CONSENT_TTL_MIN", "30")
-    monkeypatch.setattr(_appmod, "_now", lambda: 7000.0)
-    posts = []
-
-    def say(text=None, thread_ts=None):
-        posts.append({"text": text, "thread_ts": thread_ts})
-
-    body = {
-        "user": {"id": "U_OK"},
-        "channel": {"id": "C1"},
-        "actions": [
-            {
-                "action_id": _appmod._WRITE_APPROVE_ACTION,
-                "value": '{"agent": "aristotle", "thread_ts": "T1"}',
-            }
-        ],
-    }
-    _appmod._on_consent_action(_CONTROL_AGENT, body, say)
-    entry = claude_runner.get_override("aristotle", "T1", path=store)
-    assert entry == {"write": True, "write_expires_at": 7000.0 + 30 * 60}
-    assert len(posts) == 1
-    assert posts[0]["thread_ts"] == "T1"
-
-
-def test_on_consent_action_ignores_malformed_payload(monkeypatch, tmp_path):
-    # A payload with no actions / no thread target is ignored, not a crash.
-    if not _HAVE_APP:
-        return
-    assert _appmod is not None
-    store = str(tmp_path / "overrides.json")
-    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: store)
-    monkeypatch.setenv("WRITE_ALLOWLIST", "U_OK")
-    posts = []
-
-    def say(text=None, thread_ts=None):
-        posts.append({"text": text, "thread_ts": thread_ts})
-
-    _appmod._on_consent_action(_CONTROL_AGENT, {"actions": [{}]}, say)
-    assert claude_runner.get_override("aristotle", "T1", path=store) is None
-    assert posts == []  # no thread target -> nothing posted
-
-
-def test_manifest_enables_interactivity():
-    # The buttons ride Socket Mode; interactivity must be enabled in the manifest
-    # so the action payloads are delivered after a reinstall.
-    m = build_manifest(_CONTROL_AGENT)
-    assert m["settings"]["interactivity"]["is_enabled"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -3224,6 +2598,8 @@ def test_build_command_stream_flags_claude(monkeypatch):
         SID,
         "--agent",
         "unarylab-research:project_manager",
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -3238,6 +2614,8 @@ def test_build_command_stream_flags_claude(monkeypatch):
         "--verbose",
         "--resume",
         SID,
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -3410,6 +2788,8 @@ def test_run_claude_stream_disabled_keeps_legacy_argv_and_single_path(monkeypatc
         SID,
         "--agent",
         "unarylab-research:project_manager",
+        "--permission-mode",
+        "bypassPermissions",
         "--model",
         MODEL,
         PROMPT,
@@ -3769,8 +3149,8 @@ def test_maybe_upload_outputs_no_workdir_skips_upload(monkeypatch):
     if not _HAVE_APP:
         return
     assert _appmod is not None
-    # No get_workdir helper installed (the read-write feature is absent) -> the
-    # outbound path is a no-op and files_upload_v2 is NEVER called.
+    # No get_workdir helper installed -> the outbound path is a no-op and
+    # files_upload_v2 is NEVER called.
     monkeypatch.delattr(claude_runner, "get_workdir", raising=False)
     client = _FakeFileClient()
     count = _appmod._maybe_upload_outputs(client, "C1", "T1", _FILE_AGENT, since=0.0)
@@ -3817,6 +3197,24 @@ def test_files_modified_since_filters_by_mtime(tmp_path):
     assert found == [str(new)]  # only the file touched at/after the cutoff
     # A missing workdir is empty, never an error.
     assert _appmod._files_modified_since(str(tmp_path / "nope"), since=0.0) == []
+
+
+def test_files_modified_since_skips_caches_and_dotfiles(tmp_path):
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    # A real output file, a tool-cache dir with a file, and a dotfile -- all fresh.
+    out = tmp_path / "result.txt"
+    out.write_text("real", encoding="utf-8")
+    cache = tmp_path / ".ruff_cache"
+    cache.mkdir()
+    (cache / "CACHEDIR.TAG").write_text("Signature", encoding="utf-8")
+    dotfile = tmp_path / ".gitignore"
+    dotfile.write_text("*.pyc", encoding="utf-8")
+    for p in (out, cache / "CACHEDIR.TAG", dotfile):
+        os.utime(str(p), (200.0, 200.0))
+    found = _appmod._files_modified_since(str(tmp_path), since=0.0)
+    assert found == [str(out)]  # cache dir + dotfiles excluded, only the real output
 
 
 def test_upload_workdir_files_swallows_errors():
@@ -4180,7 +3578,7 @@ if __name__ == "__main__":
 
     from pathlib import Path as _TmpPath  # real Path: supports .exists()/.write_text()
 
-    # Mirror conftest's autouse fixture: pin the LEGACY non-stream path AND the
+    # Mirror conftest's autouse fixture: pin the LEGACY non-stream path and the
     # footer-off default so the runner unit tests (which mock subprocess.run) and
     # the footer-free reply assertions are deterministic and shell-immune. Tests set
     # STREAM_OUTPUT/SHOW_USAGE via their own monkeypatch and undo back to this
@@ -4275,12 +3673,6 @@ if __name__ == "__main__":
         test_build_command_overrides_model_and_effort,
         test_build_command_override_effort_only_leaves_model_default,
         test_build_command_overrides_none_or_empty_is_byte_identical,
-        test_build_command_write_off_byte_identical_claude,
-        test_build_command_write_on_claude_new_and_resume,
-        test_build_command_write_on_claude_does_not_disable_task_subagent,
-        test_build_command_write_off_byte_identical_codex,
-        test_codex_build_command_write_on_fresh,
-        test_codex_build_command_write_on_resume,
         test_session_create_then_resume_same_id,
         test_sessions_are_independent_across_agent_and_thread,
         test_override_set_model_then_read_back,
@@ -4288,7 +3680,6 @@ if __name__ == "__main__":
         test_override_clear_removes_entry,
         test_overrides_independent_across_agent_and_thread,
         test_overrides_path_from_env_redirects_store,
-        test_override_write_flag_round_trip,
         test_get_workdir_under_base_namespaced_and_created,
         test_get_workdir_independent_across_agent_and_thread,
         test_get_workdir_returns_absolute_path,
@@ -4355,26 +3746,8 @@ if __name__ == "__main__":
         test_control_phrase_reset_clears_override,
         test_control_phrase_unknown_help,
         test_control_phrase_non_command_returns_false,
-        test_is_write_allowed_user_or_channel,
-        test_control_phrase_write_on_denied_keeps_read_only,
-        test_control_phrase_write_off_disables,
-        test_run_and_update_injects_workdir_only_when_write_on,
+        test_run_and_update_always_injects_workdir,
         test_run_and_update_injects_identity_every_turn,
-        test_grant_write_consent_stores_flag_and_expiry,
-        test_is_write_active_true_before_expiry_false_after,
-        test_is_write_active_false_when_no_override,
-        test_is_write_active_no_expiry_means_active,
-        test_control_phrase_write_on_allowlisted_posts_buttons,
-        test_control_phrase_write_on_non_allowlisted_refused_no_buttons,
-        test_control_phrase_write_status_reports_state,
-        test_consent_approve_by_allowlisted_enables_write_with_expiry,
-        test_consent_approve_by_non_allowlisted_ignored,
-        test_consent_deny_keeps_read_only,
-        test_consent_ttl_minutes_reads_env,
-        test_run_and_update_reverts_to_read_only_after_consent_expiry,
-        test_on_consent_action_unpacks_payload_and_grants,
-        test_on_consent_action_ignores_malformed_payload,
-        test_manifest_enables_interactivity,
         test_cron_store_add_list_remove,
         test_cron_store_set_enabled_toggles,
         test_cron_store_id_autogenerated_and_unique,
@@ -4419,6 +3792,7 @@ if __name__ == "__main__":
         test_maybe_upload_outputs_no_workdir_skips_upload,
         test_maybe_upload_outputs_uploads_produced_files,
         test_files_modified_since_filters_by_mtime,
+        test_files_modified_since_skips_caches_and_dotfiles,
         test_upload_workdir_files_swallows_errors,
         test_random_quote_returns_member_of_list,
         test_random_quote_empty_when_missing_or_invalid,

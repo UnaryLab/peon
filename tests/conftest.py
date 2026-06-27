@@ -7,8 +7,8 @@ tests do `from src import ...` without an install step (no setup.py / pyproject)
 Hermeticity for model/effort: agents.json is the SINGLE source of truth for an
 agent's model and effort (agents.resolve reads ONLY the agent dict's field, with
 one code-level fallback). There is no global env-var layer, so a developer's
-shell can no longer leak into the default-path argv assertions, and no env
-scrubbing is needed here.
+shell cannot leak into the default-path argv assertions, and no env scrubbing is
+needed here.
 
 Hermeticity for STREAM_OUTPUT: streaming defaults ON at run time, but the runner
 unit tests that mock subprocess.run assert the LEGACY (non-stream) single-blob

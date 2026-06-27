@@ -1,9 +1,9 @@
-"""FACADE for the Slack layer (split into the src/slack/ package in Phase 3).
+"""FACADE for the Slack layer (the src/slack/ package).
 
-The former monolithic module's body now lives across src/slack/{app, handlers,
-control, consent, scheduler, files, usage}.py. This thin facade re-exports the
-public surface so external callers (src/__main__.py's `from .app import main`)
-and the test suite's `app.<name>` references keep resolving unchanged.
+The Slack-facing body lives across src/slack/{app, handlers, control, scheduler,
+files, usage}.py. This thin facade re-exports the public surface so external
+callers (src/__main__.py's `from .app import main`) and the test suite's
+`app.<name>` references keep resolving unchanged.
 
 Two patch-target categories drive what this facade must expose:
 
@@ -14,7 +14,7 @@ Two patch-target categories drive what this facade must expose:
     runners`) for the patch to be seen.
 
   - Kind B (facade-owned names): functions/attributes the tests patch by name on
-    THIS module (e.g. `_now`, `build_app_for`, `SocketModeHandler`, `_run_and_update`,
+    THIS module (e.g. `build_app_for`, `SocketModeHandler`, `_run_and_update`,
     `_scheduler_tick`, `_attachments_dir`, `_http_get_bytes`). Cross-module callers
     of these names resolve them THROUGH this facade (a lazy `from src import app`
     inside the function body) so a patch here is seen at their call sites.
@@ -38,7 +38,6 @@ from . import runners  # noqa: F401 - Kind A: tests patch app.runners.get_runner
 # --- Build/reconcile/main core (src/slack/app.py) ---------------------------
 from .slack.app import (  # noqa: F401
     _has_existing_thread_session,
-    _now,
     _reload_loop,
     _reload_requested,
     _request_reload,
@@ -58,23 +57,6 @@ from .slack.control import (  # noqa: F401
     _ack_effective,
     _effective_config,
     _handle_control_phrase,
-)
-
-# --- Write-mode consent flow (src/slack/consent.py) -------------------------
-from .slack.consent import (  # noqa: F401
-    _DEFAULT_CONSENT_TTL_MIN,
-    _WRITE_APPROVE_ACTION,
-    _WRITE_DENY_ACTION,
-    _WRITE_OFF_WORDS,
-    _WRITE_ON_WORDS,
-    _WRITE_STATUS_WORDS,
-    _ack_write_status,
-    _build_consent_blocks,
-    _consent_ttl_min,
-    _handle_consent,
-    _handle_write_command,
-    _is_write_allowed,
-    _on_consent_action,
 )
 
 # --- File attachments: inbound download + outbound upload (src/slack/files.py)

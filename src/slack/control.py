@@ -1,12 +1,12 @@
 """Per-thread control phrases (typed AFTER the mention is stripped).
 
 A message starting with "!" is a standalone command: it updates this thread's
-model/effort override, toggles write-mode, manages crons, or resets, and acks,
-WITHOUT running the agent. Anchored at the start so a normal prompt that merely
-contains "!" later is unaffected. Moved verbatim from the former src/app.py.
+model/effort override, manages crons, or resets, and acks, WITHOUT running the
+agent. Anchored at the start so a normal prompt that merely contains "!" later is
+unaffected.
 
-Cross-module dispatch (write -> consent, cron -> scheduler) is NOT a patched-on-
-facade seam, so it is wired with direct package imports.
+Cross-module dispatch (cron -> scheduler) is NOT a patched-on-facade seam, so it
+is wired with direct package imports.
 """
 
 from __future__ import annotations
@@ -16,13 +16,9 @@ import re
 from src import agents, store
 from src.runners import claude_runner
 
-from . import consent, interrupt, scheduler
+from . import interrupt, scheduler
 
-# Per-thread control phrases (typed AFTER the mention is stripped). A message
-# starting with "!" is a standalone command: it updates this thread's model/
-# effort override and acks, WITHOUT running the agent. Anchored at the start so a
-# normal prompt that merely contains "!" later is unaffected.
-CONTROL_RE = re.compile(r"^!(model|effort|reset|write|cron)\b\s*(.*)$", re.IGNORECASE)
+CONTROL_RE = re.compile(r"^!(model|effort|reset|cron)\b\s*(.*)$", re.IGNORECASE)
 
 # The reasoning-effort levels accepted by !effort. Anything else is rejected.
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -59,24 +55,21 @@ def _ack_effective(agent, thread_ts, say):
     )
 
 
-def _handle_control_phrase(agent, text, thread_ts, say, user_id=None, channel_id=None):
+def _handle_control_phrase(agent, text, thread_ts, say, channel_id=None):
     """Handle a "!"-prefixed control phrase. Returns True if it was one (handled).
 
     Recognizes (case-insensitive, anchored at start):
       !model <model-id>   -> set this thread's model override (any non-empty id)
       !effort <level>     -> set this thread's effort override (validated)
-      !write <on|off>     -> turn this thread's read-write tool surface on/off
-                             (turning ON is gated by the WRITE_ALLOWLIST; turning
-                             OFF is always allowed)
       !cron <sub>         -> manage Slack-native scheduled runs in this thread
                              (add "<expr>" <prompt> | list | remove <id> |
                              on <id> | off <id>); see _handle_cron_command
-      !reset              -> clear this thread's overrides (back to read-only)
+      !reset              -> clear this thread's overrides (back to defaults)
     Any other "!..." -> a one-line help ack. A non-"!" message returns False so
     the caller runs the agent normally. On every handled case this acks into the
-    thread and the agent is NOT run. `user_id`/`channel_id` identify the requester
-    for the write-mode allowlist gate (default None => not allowlisted). No real
-    Slack client is needed (say is injected), so this is unit-testable.
+    thread and the agent is NOT run. `channel_id` identifies the thread's channel
+    for !cron. No real Slack client is needed (say is injected), so this is
+    unit-testable.
     """
     # Interrupt (the Ctrl-C analog): a !stop / stop / interrupt / ctrl-c message
     # signals the in-flight run for THIS thread and starts no new run. Checked
@@ -108,7 +101,7 @@ def _handle_control_phrase(agent, text, thread_ts, say, user_id=None, channel_id
         say(
             text=(
                 f"{agent['display_name']}: overrides cleared. Back to defaults: "
-                f"model={model}, effort={effort} (write OFF, read-only)"
+                f"model={model}, effort={effort}"
             ),
             thread_ts=thread_ts,
         )
@@ -120,10 +113,6 @@ def _handle_control_phrase(agent, text, thread_ts, say, user_id=None, channel_id
             return True
         store.set_override(agent["name"], thread_ts, "model", arg)
         _ack_effective(agent, thread_ts, say)
-        return True
-
-    if command == "write":
-        consent._handle_write_command(agent, arg, thread_ts, say, user_id, channel_id)
         return True
 
     if command == "cron":
@@ -148,8 +137,7 @@ def _ack_control_help(agent, thread_ts, say):
     say(
         text=(
             f"Commands: `!model <id>`, `!effort <{'|'.join(VALID_EFFORTS)}>`, "
-            f"`!write <on|off|status>`, `!cron <add|list|remove|on|off>`, "
-            f"`!stop`, `!reset`"
+            f"`!cron <add|list|remove|on|off>`, `!stop`, `!reset`"
         ),
         thread_ts=thread_ts,
     )

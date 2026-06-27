@@ -31,20 +31,15 @@ import os
 import signal
 import sys
 import threading
-import time
 
 from slack_bolt import App
 
 from src import agents, store
 
-from . import consent, handlers, scheduler
+from . import handlers, scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("peon")
-
-# Wall-clock seam for consent TTL/expiry. Module-level so tests inject a fake; the
-# worker and the action handler read it so expiry is deterministic in tests.
-_now = time.time
 
 # Set by the SIGHUP handler, consumed by the main reload loop. Module-level so the
 # (minimal) signal handler can flip it without touching any heavy state.
@@ -103,21 +98,6 @@ def build_app_for(agent, bot_token):
         if not _has_existing_thread_session(agent, event):
             return
         handlers._handle(agent, event, client, say)
-
-    # Write-mode consent buttons. Socket Mode delivers these interactivity
-    # payloads, so NO public request URL is needed; manifest interactivity must be
-    # enabled (see manifest.py) for them to arrive after a reinstall. Both buttons
-    # share one handler that dispatches on the action_id. ack() first (Slack's
-    # interactivity deadline), then resolve the click via _handle_consent.
-    @app.action(consent._WRITE_APPROVE_ACTION)
-    def on_write_approve(ack, body, say):
-        ack()
-        consent._on_consent_action(agent, body, say)
-
-    @app.action(consent._WRITE_DENY_ACTION)
-    def on_write_deny(ack, body, say):
-        ack()
-        consent._on_consent_action(agent, body, say)
 
     return app
 

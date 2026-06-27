@@ -89,10 +89,8 @@ def build_command(
       new session:        + ["--session-id", session_id]
       resume session:     + ["--resume", session_id]
       named agent:        + ["--agent", agent["claude_agent"]]  (None => omit)
-      write mode (ON):    + ["--permission-mode", "acceptEdits",
-                             "--add-dir", overrides["_workdir"]]
-                            (only when overrides has write=True AND _workdir;
-                            default OFF => omitted, argv byte-identical)
+      full access:        + ["--permission-mode", "bypassPermissions"]  (always,
+                            unconditional: access is hardcoded-full, no confinement)
       model:              + ["--model", model]   (from agents.json "model", else
                             the claude-opus-4-8[1m] fallback; always present
                             since the default is non-empty)
@@ -120,10 +118,8 @@ def build_command(
     `overrides` (default None) is the per-thread override dict set from Slack
     control phrases: a non-empty "model"/"effort" in it REPLACES the agents.json
     resolution for that field, applied right after the resolve. overrides=None
-    (or {}) leaves the argv byte-identical to the no-override path. A non-empty
-    overrides["write"] together with overrides["_workdir"] additionally enables
-    the read-write tool surface (see the write-mode contract line above); both are
-    required, so a write flag without a workdir stays read-only / byte-identical.
+    (or {}) leaves the argv identical to the no-override path. overrides["_workdir"]
+    sets the run's cwd (see _cwd_from_overrides) but does not affect argv.
 
     --agent is added on BOTH new and resume runs. Resume was verified to work,
     and repeating --agent on resume is harmless/consistent (it just re-asserts
@@ -150,17 +146,10 @@ def build_command(
     if agent.get("claude_agent") is not None:
         argv += ["--agent", agent["claude_agent"]]
 
-    # WRITE-MODE (read-write tool surface), default OFF. Only when the per-thread
-    # override has write=True AND a confined workdir is present do we enable
-    # non-interactive tool use: --permission-mode acceptEdits (the least-privilege
-    # mode that lets -p run tools without prompting; NOT bypassPermissions) plus
-    # --add-dir <workdir> so edits are confined to the thread's isolated dir (the
-    # runner also sets cwd to it). This also unblocks claude's native sub-agent
-    # (Task tool); we add NO tool-restriction flag, so Task stays available. With
-    # write off (the default), or no workdir, NONE of these are added and the argv
-    # is byte-identical to the read-only path.
-    if overrides and overrides.get("write") and overrides.get("_workdir"):
-        argv += ["--permission-mode", "acceptEdits", "--add-dir", overrides["_workdir"]]
+    # Every run is fully unsandboxed: --permission-mode bypassPermissions (verified:
+    # claude accepts it). cwd is the thread's workdir (overrides["_workdir"], set by
+    # the worker) so files the run produces can be uploaded back.
+    argv += ["--permission-mode", "bypassPermissions"]
 
     # Model: from agents.json "model"; fallback to the pinned default if absent.
     # A per-thread override REPLACES it. Always present because the default is
@@ -184,14 +173,11 @@ def build_command(
 
 
 def _cwd_from_overrides(overrides):
-    """The subprocess cwd for this run, or None to keep the default (process cwd).
-
-    Returns the confined workdir ONLY when write-mode is on (overrides has
-    write=True AND a non-empty _workdir); otherwise None, so the read-only path
-    runs in the inherited cwd exactly as before (behavior byte-identical). The dir
-    is created on demand so the CLI can write into it.
+    """The subprocess cwd for this run: the per-thread workdir, or None for the
+    inherited process cwd. Returns overrides["_workdir"] when present (the worker
+    always injects it), creating the dir on demand so the CLI can write into it.
     """
-    if overrides and overrides.get("write") and overrides.get("_workdir"):
+    if overrides and overrides.get("_workdir"):
         workdir = overrides["_workdir"]
         os.makedirs(workdir, exist_ok=True)
         return workdir
@@ -255,9 +241,8 @@ def _meta_from_payload(payload, agent, overrides=None):
         )
         present = [usage.get(f) for f in token_fields if isinstance(usage.get(f), int)]
         if present:
-            # None-safe sum: a missing field is absent here (the isinstance
-            # filter drops non-ints), so an absent field contributes 0.
-            meta["tokens"] = sum(v for v in present if v is not None)
+            # The comprehension already kept only ints, so a plain sum is safe.
+            meta["tokens"] = sum(present)
 
         # Numerator for context_pct: the INPUT-side fields only (prompt context).
         input_fields = (
@@ -271,7 +256,7 @@ def _meta_from_payload(payload, agent, overrides=None):
         if input_present:
             window = _context_window_for(agent, overrides)
             if window:
-                numerator = sum(v for v in input_present if v is not None)
+                numerator = sum(input_present)
                 meta["context_pct"] = round(numerator / window * 100)
 
     cost = payload.get("total_cost_usd")

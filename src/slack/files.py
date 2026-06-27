@@ -2,16 +2,15 @@
 
 Slack messages can carry files[] (uploads, images, diagrams). Inbound: each
 file's url_private is downloaded with the bot token (a Bearer header) and its
-local path appended to the prompt so the CLI can read it. Outbound: if the
-thread has a designated read-write workdir (the read-write feature, shipped
-later, installs claude_runner.get_workdir), files the run created/modified there
-are uploaded back into the thread. Diagrams (image/svg) need no special case --
-they are ordinary files. All HTTP/Slack I/O goes through small seams so tests
-mock it; nothing here performs real network I/O at import time.
+local path appended to the prompt so the CLI can read it. Outbound: files the run
+created/modified in the thread's workdir are uploaded back into the thread.
+Diagrams (image/svg) need no special case -- they are ordinary files. All
+HTTP/Slack I/O goes through small seams so tests mock it; nothing here performs
+real network I/O at import time.
 
-Moved verbatim from the former src/app.py. The Kind-B seams (_attachments_dir,
-_http_get_bytes) are resolved THROUGH the app facade inside _download_attachments
-so a test's monkeypatch on the facade is seen by this module's call sites.
+The Kind-B seams (_attachments_dir, _http_get_bytes) are resolved THROUGH the app
+facade inside _download_attachments so a test's monkeypatch on the facade is seen
+by this module's call sites.
 """
 
 from __future__ import annotations
@@ -25,6 +24,19 @@ from src import store
 from src.runners import claude_runner
 
 logger = logging.getLogger("peon")
+
+# Dirs the outbound sweep must never upload (tool caches, VCS, virtualenvs).
+# Pruned in-place during os.walk so their contents are never even stat'd.
+_SKIP_DIRS = {
+    ".ruff_cache",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ipynb_checkpoints",
+    ".venv",
+}
 
 
 def _http_get_bytes(url, token):
@@ -47,7 +59,7 @@ def _attachments_dir(thread_ts):
     a later message in the same thread can still reference an earlier file path.
 
     The thread_ts is sanitized via the SAME canonical helper the workdir path uses
-    (claude_runner._safe_token), so the path-component sanitizing rule lives in ONE
+    (store._safe_token), so the path-component sanitizing rule lives in ONE
     place. Byte-identical for any real Slack thread_ts (digits + dot).
     """
     safe = store._safe_token(thread_ts)
@@ -106,12 +118,12 @@ def _append_attachments(prompt, paths):
 
 
 def _thread_workdir(agent, thread_ts):
-    """The designated read-write workdir for this (agent, thread), or None.
+    """The per-thread workdir for this (agent, thread), or None.
 
     Uses the shared helper `claude_runner.get_workdir(agent_name, thread_ts)` (a
-    PURE path lookup here: create defaults False, so a read-only thread does not
-    spawn an empty dir; the outbound scan guards on os.path.isdir). Guarded so a
-    helper that is absent or raises still yields None (never aborts the run).
+    PURE path lookup here: create defaults False, so this never spawns an empty
+    dir; the outbound scan guards on os.path.isdir). Guarded so a helper that is
+    absent or raises still yields None (never aborts the run).
     """
     helper = getattr(claude_runner, "get_workdir", None)
     if helper is None:
@@ -128,13 +140,18 @@ def _files_modified_since(workdir, since):
 
     Walks the tree (so files in subdirs are included) and keeps only files touched
     at or after `since` (the run's start time), i.e. created or modified during the
-    run. A missing/unreadable workdir yields []. Sorted for deterministic order.
+    run. Tool-cache/VCS dirs (_SKIP_DIRS) and dotfiles/dotdirs are pruned so a run's
+    incidental .ruff_cache/.git churn is never posted as junk. A missing/unreadable
+    workdir yields []. Sorted for deterministic order.
     """
     if not workdir or not os.path.isdir(workdir):
         return []
     found = []
-    for root, _dirs, names in os.walk(workdir):
+    for root, dirs, names in os.walk(workdir):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
         for name in names:
+            if name.startswith("."):
+                continue
             path = os.path.join(root, name)
             try:
                 if os.path.isfile(path) and os.path.getmtime(path) >= since:
@@ -166,13 +183,12 @@ def _upload_workdir_files(client, channel, thread_ts, paths):
 
 
 def _maybe_upload_outputs(client, channel, thread_ts, agent, since):
-    """Scan the thread's designated workdir for files the run produced and upload them.
+    """Scan the thread's workdir for files the run produced and upload them.
 
-    No workdir configured (the read-write feature absent or no workdir for this
-    thread) -> a no-op returning 0 (files_upload_v2 is never called). Otherwise
-    every file under the workdir with mtime >= `since` (created/modified during the
-    run) is uploaded into the thread. Guarded so an upload error never crashes the
-    worker.
+    No workdir for this thread -> a no-op returning 0 (files_upload_v2 is never
+    called). Otherwise every file under the workdir with mtime >= `since`
+    (created/modified during the run) is uploaded into the thread. Guarded so an
+    upload error never crashes the worker.
     """
     workdir = _thread_workdir(agent, thread_ts)
     if not workdir:

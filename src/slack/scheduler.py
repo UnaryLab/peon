@@ -19,9 +19,9 @@ day-of-week is 0-6 with 0 (and 7) = Sunday. dom/dow use OR semantics only when
 both are restricted (standard cron); here we keep it simple: every field must
 match (AND), which is the common case for the schedules this supports.
 
-Moved verbatim from the former src/app.py. Kind-B seams: _fire_cron resolves
-_run_and_update and _scheduler_loop resolves _scheduler_tick THROUGH the app
-facade so a test's monkeypatch on the facade is seen by these call sites.
+Kind-B seams: _fire_cron resolves _run_and_update and _scheduler_loop resolves
+_scheduler_tick THROUGH the app facade so a test's monkeypatch on the facade is
+seen by these call sites.
 """
 
 from __future__ import annotations
