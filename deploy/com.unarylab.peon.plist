@@ -11,6 +11,10 @@
   </array>
   <!-- EDIT: set WorkingDirectory to your local checkout path. -->
   <key>WorkingDirectory</key><string>/Users/YOU/Projects/peon</string>
+  <!-- Runtime config (OBSIDIAN_VAULT_PATH, secrets, timeouts, toggles) lives in
+       .env at WorkingDirectory; peon loads it first and the CLI subprocess
+       inherits it. Set a var here only if it must exist before .env is read
+       (e.g. PATH so launchd can find `claude`/`codex` in ~/.local/bin). -->
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict>

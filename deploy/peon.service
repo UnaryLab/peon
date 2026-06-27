@@ -5,6 +5,9 @@ After=network-online.target
 [Service]
 # Adjust WorkingDirectory and the conda path in ExecStart for your machine.
 WorkingDirectory=%h/Projects/peon
+# Runtime config (OBSIDIAN_VAULT_PATH, secrets, timeouts, toggles) lives in
+# .env at WorkingDirectory; peon loads it first and the CLI subprocess inherits
+# it. Add Environment=/EnvironmentFile= here only for vars needed before .env.
 ExecStart=/usr/bin/env conda run -n peon python -m src
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

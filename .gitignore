@@ -8,6 +8,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .claude/settings.local.json
+.serena/
 .DS_Store
 
 # Generated from agents.json via `python -m src manifest --write`

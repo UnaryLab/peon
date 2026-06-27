@@ -301,6 +301,18 @@ var, including `SESSIONS_PATH` and the `*_TIMEOUT_MIN` timeouts, which now
 take effect from `.env` (the session-store path is resolved live at store
 access, so it honors `.env` even though it is read early at import time).
 
+**Skills that need extra environment or web access.** peon spawns the CLI with no
+explicit `env=`, so every variable in `.env` is inherited by the `claude`/`codex`
+subprocess (and any skill it runs). Put any value a skill expects from your shell
+but that a service manager (launchd/systemd) does NOT inherit here, rather than
+hardcoding it into the OS-specific `deploy/` templates: e.g. `OBSIDIAN_VAULT_PATH`
+for the `obsidian-*` research skills, set to your vault root (the folder
+containing `research/`). Web tools are gated by the CLI itself, not by peon, and a
+headless read-only run cannot prompt for permission, so pre-approve them once: for
+Claude, add `WebSearch` / `WebFetch` to `permissions.allow` in
+`~/.claude/settings.json`; for Codex, set `[tools] web_search = true` in
+`~/.codex/config.toml`.
+
 ## Running always-on
 
 `python -m src` runs in the foreground and stops when you close the terminal. To
