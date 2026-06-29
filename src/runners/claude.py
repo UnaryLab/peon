@@ -24,6 +24,7 @@ import subprocess
 import uuid
 
 from src import agents
+from src.runners.common import safe_on_update
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -294,6 +295,22 @@ def _text_delta_from_stream_event(event):
     return text if isinstance(text, str) else None
 
 
+def _is_block_stop(event):
+    """True if `event` is a stream_event marking the end of a content block.
+
+    Same wrapping as the deltas:
+    {"type":"stream_event","event":{"type":"content_block_stop", ...}}. The
+    streaming loop force-flushes the accumulated text on this so a completed text
+    block (e.g. the agent's initial preamble, right before it starts a long
+    tool/subagent call that emits no more text) is shown in FULL rather than the
+    mid-sentence fragment the 1/sec updater throttle last posted.
+    """
+    if not isinstance(event, dict) or event.get("type") != "stream_event":
+        return False
+    inner = event.get("event")
+    return isinstance(inner, dict) and inner.get("type") == "content_block_stop"
+
+
 def _run_claude_streaming(agent, argv, timeout, overrides, on_update, cancel=None):
     """Run claude with --output-format stream-json, consuming stdout line-by-line.
 
@@ -346,11 +363,14 @@ def _run_claude_streaming(agent, argv, timeout, overrides, on_update, cancel=Non
             chunk = _text_delta_from_stream_event(event)
             if chunk:
                 accumulated.append(chunk)
-                if on_update is not None:
-                    try:
-                        on_update("".join(accumulated))
-                    except Exception:  # noqa: BLE001 - a bad update must not abort the run
-                        pass
+                safe_on_update(on_update, "".join(accumulated))
+            elif _is_block_stop(event) and accumulated:
+                # A content block just ended: force-flush the full accumulated text
+                # past the updater's 1/sec throttle so a completed text block (the
+                # agent's initial preamble, before a long tool/subagent call that
+                # emits no more text deltas) shows in FULL, not the mid-sentence
+                # fragment the throttle last posted.
+                safe_on_update(on_update, "".join(accumulated), force=True)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:

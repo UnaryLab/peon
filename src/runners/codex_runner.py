@@ -19,6 +19,7 @@ import subprocess  # noqa: F401 - load-bearing: tests patch codex_runner.subproc
 from .codex import (  # noqa: F401
     _agent_message_text_from_event,
     _cwd_from_overrides,
+    _is_completed_item,
     _run_codex_streaming,
     _stream_enabled,
     _thread_id_from_stdout,

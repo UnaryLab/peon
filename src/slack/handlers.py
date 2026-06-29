@@ -141,21 +141,30 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
     if now is None:
         now = time.monotonic
     last_post: float | None = None
+    last_text: str | None = None
 
-    def _update(text):
-        nonlocal last_post
+    def _update(text, force=False):
+        nonlocal last_post, last_text
         # Scrub any (possibly partial) <<files: ...>> marker so it never flashes
         # mid-stream; the final update strips it for real via _parse_file_marker.
         text = files._strip_file_marker(text)
-        if not text:
+        # Skip empties (Slack rejects them) and no-op re-posts (a force-flush on a
+        # tool_use block_stop carries the SAME text as the text block before it).
+        if not text or text == last_text:
             return
         current = now()
+        # `force` bypasses the 1/sec gate: the runner force-flushes when a content
+        # block ENDS, so a completed text block (the agent's initial preamble,
+        # right before a long tool/subagent call that emits no more text) shows in
+        # FULL instead of the mid-sentence fragment the throttle last posted.
         if (
-            last_post is not None
+            not force
+            and last_post is not None
             and (current - last_post) < _STREAM_UPDATE_MIN_INTERVAL_S
         ):
             return
         last_post = current
+        last_text = text
         try:
             client.chat_update(channel=channel, ts=placeholder_ts, text=text)
         except Exception:  # noqa: BLE001 - a transient Slack error must not abort the stream

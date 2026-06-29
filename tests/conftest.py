@@ -14,16 +14,13 @@ Hermeticity for STREAM_OUTPUT: streaming defaults ON at run time, but the runner
 unit tests that mock subprocess.run assert the LEGACY (non-stream) single-blob
 path. An autouse fixture pins STREAM_OUTPUT="0" by default so those tests are
 deterministic regardless of the developer's shell; the streaming tests opt back
-in with monkeypatch.setenv("STREAM_OUTPUT", "1"). (The no-pytest fallback runner
-in test_runner.py sets the same default itself, since it does not load conftest.)
+in with monkeypatch.setenv("STREAM_OUTPUT", "1").
 
 Hermeticity for SHOW_USAGE: the usage footer now defaults ON at run time, but the
 general suite asserts footer-free reply text. The same autouse fixture pins
 SHOW_USAGE="0" by default so those assertions hold regardless of the developer's
 shell; the dedicated telemetry tests set SHOW_USAGE explicitly (or delete it via
-monkeypatch.delenv) to exercise the on/off/unset behavior. (The no-pytest fallback
-runner in test_runner.py sets the same default itself, since it does not load
-conftest.)
+monkeypatch.delenv) to exercise the on/off/unset behavior.
 """
 
 import os

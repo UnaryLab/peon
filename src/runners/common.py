@@ -1,9 +1,10 @@
 """Genuinely cross-vendor runtime shared by both runner backends.
 
-Holds the one symbol both the claude and codex runners truly share: the
-idempotency dedup (`seen_before`). It is Slack-agnostic (dedups opaque string
-message ids), so it is importable without slack_bolt and is unit-testable. The
-vendor facades (claude_runner / codex_runner) re-export `seen_before` from here.
+Holds the symbols both the claude and codex runners truly share: the idempotency
+dedup (`seen_before`), the run-interrupt handle (`Interrupt`), and the
+incremental-update helper (`safe_on_update`). All are Slack-agnostic, so this is
+importable without slack_bolt and is unit-testable. The vendor facades
+(claude_runner / codex_runner) re-export `seen_before` and `Interrupt` from here.
 """
 
 from __future__ import annotations
@@ -90,3 +91,31 @@ class Interrupt:
                 proc.send_signal(signal.SIGINT)
             except (ProcessLookupError, OSError):
                 pass  # already exited between the poll and the signal
+
+
+def safe_on_update(on_update, text, force=False):
+    """Push one incremental update through `on_update`, swallowing any error.
+
+    Both streaming runners feed the cumulative reply text here as it grows. A
+    transient Slack failure (or a None callback on the non-stream path) must never
+    abort the run, so every error is swallowed.
+
+    `force=True` asks the updater to bypass its ~1/sec throttle; the runners set it
+    when a unit of output COMPLETES (claude: a content_block_stop; codex: a
+    completed item) so a finished block shows in FULL instead of the mid-sentence
+    fragment the throttle last posted. A plain single-arg callback that predates
+    the force kwarg (e.g. a bare list.append in tests) still works via the
+    fallback call.
+    """
+    if on_update is None:
+        return
+    try:
+        on_update(text, force=force)
+    except TypeError:
+        # Callback without a force= parameter: retry the plain single-arg form.
+        try:
+            on_update(text)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001 - a bad update must not abort the run
+        pass

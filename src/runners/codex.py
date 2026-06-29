@@ -40,6 +40,7 @@ import tempfile
 import time
 
 from src import agents
+from src.runners.common import safe_on_update
 
 # Default timeout for a single codex run, in MINUTES. A run can take
 # 10s..minutes. Read as minutes and converted to seconds (*60) at the call site
@@ -347,6 +348,23 @@ def _agent_message_text_from_event(event):
     return None
 
 
+def _is_completed_item(event):
+    """True if a codex JSONL event signals a COMPLETED (terminal) item.
+
+    Codex's typed vocabulary marks the final form of an item with a "completed"
+    event type (e.g. "item.completed"). We only ever consult this for events that
+    already yielded agent-message text (see the streaming loop), so a plain
+    type-contains-"completed" check is enough. Paired with that text, a completed
+    item force-flushes the updater so the finished message shows in FULL even if
+    the 1/sec throttle dropped the prior update right before a long quiet (tool)
+    gap. Defensive (no live codex to pin the schema), mirroring
+    _agent_message_text_from_event.
+    """
+    if not isinstance(event, dict):
+        return False
+    return "completed" in str(event.get("type") or "").lower()
+
+
 def run_codex(
     agent,
     prompt,
@@ -499,13 +517,17 @@ def _run_codex_streaming(argv, timeout, on_update, cwd=None, cancel=None):
             text = _agent_message_text_from_event(event)
             # Codex emits the agent message as a growing/whole item; take the
             # latest non-empty text seen so a later, more-complete item wins.
-            if text and text != latest_text:
-                latest_text = text
-                if on_update is not None:
-                    try:
-                        on_update(text)
-                    except Exception:  # noqa: BLE001 - a bad update must not abort the run
-                        pass
+            if not text:
+                continue
+            completed = _is_completed_item(event)
+            # Skip an unchanged NON-terminal re-emission; a completed item always
+            # flushes (force=True) so the finished message shows in FULL even if the
+            # throttle dropped the prior update before a long quiet (tool) gap. The
+            # updater's own last-text dedup drops a truly redundant re-post.
+            if text == latest_text and not completed:
+                continue
+            latest_text = text
+            safe_on_update(on_update, text, force=completed)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:

@@ -25,6 +25,7 @@ from .claude import (  # noqa: F401
     _CONTEXT_WINDOW_DEFAULT,
     _context_window_for,
     _cwd_from_overrides,
+    _is_block_stop,
     _meta_from_payload,
     _run_claude_streaming,
     _stream_enabled,
