@@ -1,10 +1,11 @@
 """Genuinely cross-vendor runtime shared by both runner backends.
 
 Holds the symbols both the claude and codex runners truly share: the idempotency
-dedup (`seen_before`), the run-interrupt handle (`Interrupt`), and the
-incremental-update helper (`safe_on_update`). All are Slack-agnostic, so this is
-importable without slack_bolt and is unit-testable. The vendor facades
-(claude_runner / codex_runner) re-export `seen_before` and `Interrupt` from here.
+dedup (`seen_before`), the run-interrupt handle (`Interrupt`), the incremental-
+update helper (`safe_on_update`), and the process-failure error formatter
+(`format_process_failure`). All are Slack-agnostic, so this is importable without
+slack_bolt and is unit-testable. The vendor facades (claude_runner /
+codex_runner) re-export `seen_before` and `Interrupt` from here.
 """
 
 from __future__ import annotations
@@ -16,16 +17,8 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# Idempotency dedup (Slack-agnostic: dedups opaque string message ids)
+# Process-failure error formatting (shared by both runners on nonzero exit)
 # ---------------------------------------------------------------------------
-# Lives here (not in app.py) so it is importable without slack_bolt and is unit-
-# testable. app.py calls seen_before(msg_id) at the top of its handler so a
-# message delivered as BOTH an app_mention and a message.* event is handled once.
-#
-# ponytail: in-memory, bounded (deque maxlen) + set, single-process. Resets on
-# restart and does not dedup across processes; that is fine for this one always-on
-# process. No external cache, no TTL.
-
 _TOKEN_LIMIT_MARKERS = (
     "token limit",
     "context length",
@@ -62,6 +55,17 @@ def format_process_failure(
         detail = f"likely token/context limit: {detail}"
     return f"{command_name} exited with code {returncode}: {detail}"
 
+
+# ---------------------------------------------------------------------------
+# Idempotency dedup (Slack-agnostic: dedups opaque string message ids)
+# ---------------------------------------------------------------------------
+# Lives here (not in app.py) so it is importable without slack_bolt and is unit-
+# testable. app.py calls seen_before(msg_id) at the top of its handler so a
+# message delivered as BOTH an app_mention and a message.* event is handled once.
+#
+# ponytail: in-memory, bounded (deque maxlen) + set, single-process. Resets on
+# restart and does not dedup across processes; that is fine for this one always-on
+# process. No external cache, no TTL.
 
 _SEEN_MAXLEN = 512
 _SEEN_LOCK = threading.Lock()

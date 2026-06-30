@@ -56,6 +56,13 @@ def _clean_prompt(text):
 
 
 def _format_final_response(text):
+    """Normalize a terminal chat_update body to end in exactly one blank line.
+
+    Applied to every final post (reply + usage footer, the interrupted notice,
+    and error messages) so they end uniformly: trailing whitespace is stripped,
+    then a single trailing blank line is appended, collapsing any newline
+    buildup from footer joins or model output to one.
+    """
     return (text or "").rstrip() + "\n\n"
 
 
