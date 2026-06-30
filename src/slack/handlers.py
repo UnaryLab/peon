@@ -32,6 +32,15 @@ MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
 # !stop. One constant so the worker's two emit sites never drift.
 _INTERRUPTED_NOTICE = "_(interrupted)_"
 
+# Appended to the partial streamed reply when a run ERRORS (or is interrupted) after
+# producing some text: keep what was streamed instead of freezing a mid-sentence
+# fragment or replacing it with a bare error, and tell the user the thread is still
+# resumable (the session id was persisted at run start, so the next message
+# continues). Distinct from the clean !stop _INTERRUPTED_NOTICE above.
+_INTERRUPTED_RESUME_NOTICE = (
+    "\n\n_(interrupted - the reply was cut off; send any message to continue)_"
+)
+
 
 def _event_id(event):
     """A stable per-message id for idempotency. Prefer Slack's client_msg_id
@@ -203,6 +212,9 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
     # Register a cancel token so a "!stop" in this thread can SIGINT the run; the
     # finally below always drops it. See src.slack.interrupt / common.Interrupt.
     token = interrupt.register(agent["name"], thread_ts)
+    # Bound before the try so the error branch can always read the last streamed
+    # text, even if a ClaudeRunError were ever raised before the updater is built.
+    streamed = {"text": ""}
     try:
         runner = runners.get_runner(agent.get("backend", "claude"))
         prior = store.get_session(agent["name"], thread_ts)
@@ -232,9 +244,29 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
             **(overrides or {}),
             "_workdir": store.get_workdir(agent["name"], thread_ts, create=True),
         }
-        updater = _make_stream_updater(client, channel, placeholder_ts)
+        # Wrap the throttled updater to also retain the latest cumulative streamed
+        # text, so an errored/interrupted run can finalize the message as the partial
+        # reply (see the except branch) instead of a frozen fragment or a bare error.
+        base_updater = _make_stream_updater(client, channel, placeholder_ts)
+
+        def updater(partial, force=False):
+            streamed["text"] = partial
+            base_updater(partial, force=force)
+
+        # Persist the session id the moment the runner mints it (claude: BEFORE the
+        # subprocess starts) so an interrupted run leaves a resumable id. Codex ignores
+        # this (its id is only known post-run); the post-run set_session below covers it.
+        def on_session(session_id):
+            store.set_session(agent["name"], thread_ts, session_id)
+
         text, session_id, meta = runner.answer(
-            agent, prompt, prior, overrides=overrides, on_update=updater, cancel=token
+            agent,
+            prompt,
+            prior,
+            overrides=overrides,
+            on_update=updater,
+            cancel=token,
+            on_session=on_session,
         )
         store.set_session(agent["name"], thread_ts, session_id)
         # Split off any `<<files: ...>>` delivery marker BEFORE the interrupt notice
@@ -270,11 +302,22 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
                 agent["name"],
                 exc,
             )
-            client.chat_update(
-                channel=channel,
-                ts=placeholder_ts,
-                text=f":warning: {agent['display_name']} hit an error: {exc}",
-            )
+            # If the run streamed partial text before erroring, keep it (plus a
+            # resume note) rather than throwing it away for a bare error. The
+            # session id was persisted at run start, so the thread is resumable.
+            partial = files._strip_file_marker(streamed["text"]).strip()
+            if partial:
+                client.chat_update(
+                    channel=channel,
+                    ts=placeholder_ts,
+                    text=partial + _INTERRUPTED_RESUME_NOTICE,
+                )
+            else:
+                client.chat_update(
+                    channel=channel,
+                    ts=placeholder_ts,
+                    text=f":warning: {agent['display_name']} hit an error: {exc}",
+                )
     except Exception:  # noqa: BLE001 - last-resort guard, keep process alive
         logger.exception("unexpected failure handling %s", agent["name"])
         try:

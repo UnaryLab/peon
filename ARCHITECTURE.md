@@ -96,7 +96,7 @@ its registry `backend` field (default `"claude"`). Both runner modules expose on
 unified seam:
 
 ```python
-answer(agent, prompt, prior_session_id, overrides=None, on_update=None, cancel=None)
+answer(agent, prompt, prior_session_id, overrides=None, on_update=None, cancel=None, on_session=None)
     -> (reply_text, session_id_to_store, meta)
 ```
 
@@ -106,17 +106,22 @@ the caller must persist for resumes. `overrides` is the per-thread
 model/effort override dict (see [Per-thread stores](#per-thread-stores)); `on_update`
 is an optional `on_update(partial_text)` callback for streaming; `cancel` is an
 optional `Interrupt` token so a `!stop` can SIGINT the streaming subprocess (see
-[Run interrupt](#run-interrupt-stop)); `meta` is the
+[Run interrupt](#run-interrupt-stop)); `on_session` is an optional
+`on_session(session_id)` callback the caller uses to PERSIST the id at run START
+(see [persist-at-start](#how-independent-contexts-are-guaranteed)); `meta` is the
 usage dict `{context_pct, tokens, cost_usd, duration_s}` (any field `None`) that
 backs the [usage footer](#telemetry-the-usage-footer-show_usage). This hides the
 two backends' DIFFERENT session lifecycles behind one call shape:
 
 - **claude** needs the session id up front: `None` -> mint a `uuid4` and run a
   new session (`--session-id`); otherwise `--resume` it. Returns the id it used.
+  It fires `on_session` the instant a NEW id is minted, BEFORE the subprocess
+  starts, so an interrupted run leaves a resumable id (see below).
 - **codex** MINTS its own `thread_id`: `None` -> a fresh `codex exec` run, then
   the freshly-minted `thread_id` is parsed from stdout and returned so the caller
   can persist it; otherwise `codex exec resume <thread_id>` and the prior id is
-  returned unchanged.
+  returned unchanged. It accepts `on_session` for seam symmetry but ignores it
+  (the id is only known post-run; the caller's post-run persist covers codex).
 
 `app.py` is backend-agnostic: it loads the prior id (`get_session`), calls
 `runners.get_runner(agent.get("backend", "claude")).answer(...)`, then persists
@@ -246,6 +251,22 @@ Because the key **includes `agent_name`**, different agents never share a
 session id even for the same `thread_ts`, so contexts stay independent. A new
 Slack thread is a new key, hence a fresh context. (See the
 `get_or_create_session` tests in `tests/test_runner.py` for the guarantee.)
+
+**Persist-at-start (resilient to interruption).** peon runs under launchd with
+`KeepAlive=true`, so a machine sleep / network drop / crash relaunches peon and
+kills the in-flight `claude` child. claude's id is minted up front, so the worker
+passes an `on_session` callback that `set_session`s the id the INSTANT it is
+minted, BEFORE the subprocess runs (`claude.answer`), not only after a clean run.
+So an interrupted run leaves a resumable id and the next mention `--resume`s the
+half-written session instead of starting over. (codex can't pre-persist: its id is
+born from the run's stdout; an interrupted fresh codex run is the one case that may
+restart.)
+
+**Dead-session self-heal.** If a stored id points at a session claude no longer
+has, `--resume <id>` fails with `No conversation found with session ID: <id>`.
+`claude.answer` detects exactly that error, mints+persists a fresh id (clearing the
+dead one) and retries ONCE as a new session, so a stale id can never wedge a thread
+forever.
 
 The session store is a plain JSON file: fine for one process at modest volume.
 The background worker threads share the process, so the read-modify-write is

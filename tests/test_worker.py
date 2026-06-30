@@ -33,7 +33,15 @@ def test_run_and_update_always_injects_workdir(monkeypatch, tmp_path):
 
     class _Runner:
         @staticmethod
-        def answer(agent, prompt, prior, overrides=None, on_update=None, cancel=None):
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
             captured["overrides"] = overrides
             return "ok", "sid-1", {}
 
@@ -72,7 +80,15 @@ def test_run_and_update_injects_identity_every_turn(monkeypatch, tmp_path):
 
     class _Runner:
         @staticmethod
-        def answer(agent, prompt, prior, overrides=None, on_update=None, cancel=None):
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
             captured["prompt"] = prompt
             return "ok", "sid-1", {}
 
@@ -124,7 +140,15 @@ def test_run_and_update_marker_uploads_named_file_and_strips_marker(
 
     class _Runner:
         @staticmethod
-        def answer(agent, prompt, prior, overrides=None, on_update=None, cancel=None):
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
             return "Here is your plot.\n<<files: plot.png>>", "sid-1", {}
 
     class _Client:
@@ -148,6 +172,55 @@ def test_run_and_update_marker_uploads_named_file_and_strips_marker(
     assert os.path.basename(uploads[0]["file"]) == "plot.png"
 
 
+def test_run_and_update_errored_partial_keeps_streamed_text(monkeypatch, tmp_path):
+    # Fix 3: a run that streamed PARTIAL text and then ERRORS finalizes the Slack
+    # message as that partial reply + a resume note, NOT a frozen mid-sentence
+    # fragment or a bare ":warning: hit an error" that throws the partial away.
+    if not _HAVE_APP:
+        return
+    assert _appmod is not None
+    sessions = str(tmp_path / "sessions.json")
+    overrides = str(tmp_path / "overrides.json")
+    monkeypatch.setattr(claude_runner, "_sessions_path", lambda: sessions)
+    monkeypatch.setattr(claude_runner, "_overrides_path", lambda: overrides)
+    monkeypatch.setenv("WORKDIR_BASE", str(tmp_path / "wd"))
+
+    posted = {}
+
+    class _Runner:
+        @staticmethod
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
+            # Stream a partial reply, then die (the mid-run kill / ClaudeRunError).
+            on_update("Here is the first half of the surv")
+            raise claude_runner.ClaudeRunError("claude exited with code 1: boom")
+
+    class _Client:
+        def chat_update(self, channel=None, ts=None, text=None):
+            posted["text"] = text
+            return {"ok": True}
+
+        def files_upload_v2(self, **kwargs):
+            return {"ok": True}
+
+    monkeypatch.setattr(_appmod.runners, "get_runner", lambda backend: _Runner)
+    client = _Client()
+
+    _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "survey X", "T_err")
+
+    # The streamed partial is kept and a resume note appended; no bare error text.
+    assert "first half of the surv" in posted["text"]
+    assert "send any message to continue" in posted["text"]
+    assert "hit an error" not in posted["text"]
+
+
 def test_run_and_update_no_marker_uploads_nothing(monkeypatch, tmp_path):
     # A plain reply (no marker) uploads nothing, even when the workdir has files.
     if not _HAVE_APP:
@@ -168,7 +241,15 @@ def test_run_and_update_no_marker_uploads_nothing(monkeypatch, tmp_path):
 
     class _Runner:
         @staticmethod
-        def answer(agent, prompt, prior, overrides=None, on_update=None, cancel=None):
+        def answer(
+            agent,
+            prompt,
+            prior,
+            overrides=None,
+            on_update=None,
+            cancel=None,
+            on_session=None,
+        ):
             return "just a normal answer", "sid-1", {}
 
     class _Client:

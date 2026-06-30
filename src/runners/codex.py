@@ -565,6 +565,7 @@ def answer(
     overrides=None,
     on_update=None,
     cancel=None,
+    on_session=None,
 ):
     """Unified runner entrypoint: (reply_text, session_id_to_store, meta).
 
@@ -582,6 +583,10 @@ def answer(
     into run_codex; used only on the streaming path (the run-time default). None
     or the non-streaming path means a single final reply, behavior unchanged.
     """
+    # ponytail: on_session is accepted for seam symmetry with claude but NOT used:
+    # codex mints its thread_id only AFTER the run (parsed from stdout), so there is
+    # no id to persist up front. The caller persists the returned id post-run; the
+    # mid-run salvage (Interrupt) already keeps an interrupted thread resumable.
     is_new_session = prior_session_id is None
     return run_codex(
         agent,

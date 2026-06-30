@@ -62,6 +62,66 @@ def test_claude_answer_mints_uuid_when_no_prior():
     assert argv2[argv2.index("--resume") + 1] == sid
 
 
+def test_claude_answer_persists_session_before_subprocess_runs(tmp_path):
+    # Fix 1: the freshly minted id is persisted (via on_session) the MOMENT it's
+    # minted, BEFORE the subprocess runs, so a run killed mid-flight (peon
+    # hard-killed by launchd) still leaves a resumable id. We assert the store has
+    # the id even though the fake subprocess raises mid-run.
+    store = str(tmp_path / "sessions.json")
+    minted = []
+
+    def _persist(sid):
+        minted.append(sid)
+        claude_runner.set_session("brunel", "T1", sid, path=store)
+
+    def _boom(*a, **k):
+        raise RuntimeError("peon was hard-killed mid-run")
+
+    with mock.patch("src.runners.claude_runner.subprocess.run", side_effect=_boom):
+        try:
+            claude_runner.answer(BRUNEL, PROMPT, None, on_session=_persist)
+            assert False, "expected the subprocess failure to propagate"
+        except RuntimeError:
+            pass
+
+    # The run blew up, but the minted id is already stored -> the thread is resumable.
+    assert minted, "on_session should have fired before the subprocess ran"
+    assert claude_runner.get_session("brunel", "T1", path=store) == minted[0]
+
+
+def test_claude_answer_clears_dead_session_and_retries_fresh(tmp_path):
+    # Fix 2: a --resume against an id claude no longer has fails with "No
+    # conversation found with session ID"; answer must clear the dead id and retry
+    # ONCE as a fresh session that succeeds, so the thread is never wedged forever.
+    store = str(tmp_path / "sessions.json")
+    dead = "dead-session-id"
+    claude_runner.set_session("brunel", "T1", dead, path=store)
+
+    def _persist(sid):
+        claude_runner.set_session("brunel", "T1", sid, path=store)
+
+    good = json.dumps({"result": "recovered", "is_error": False, "subtype": "success"})
+    fail = _fake_proc(1, "", f"No conversation found with session ID: {dead}")
+    ok = _fake_proc(0, good)
+    with mock.patch(
+        "src.runners.claude_runner.subprocess.run", side_effect=[fail, ok]
+    ) as m:
+        prior = claude_runner.get_session("brunel", "T1", path=store)
+        reply, sid, _meta = claude_runner.answer(
+            BRUNEL, PROMPT, prior, on_session=_persist
+        )
+
+    assert reply == "recovered"  # the fresh retry succeeded
+    assert sid != dead  # a brand-new id was minted for the retry
+    # The dead id was cleared and replaced by the fresh one in the store.
+    assert claude_runner.get_session("brunel", "T1", path=store) == sid
+    # First call RESUMED the dead id; the retry started a FRESH session.
+    first_argv = m.call_args_list[0][0][0]
+    second_argv = m.call_args_list[1][0][0]
+    assert "--resume" in first_argv and dead in first_argv
+    assert "--session-id" in second_argv and sid in second_argv
+
+
 def _seam_store(tmp_path):
     """Drive the app.py session seam (get_session -> runner.answer -> set_session)
     against a temp store, returning the stored id for assertions. Backend-agnostic.

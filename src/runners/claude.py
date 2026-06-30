@@ -73,6 +73,13 @@ class ClaudeRunError(Exception):
     """Raised when a claude run fails (nonzero exit, timeout, is_error, bad JSON)."""
 
 
+# Substring claude prints (and run_claude surfaces in the ClaudeRunError message)
+# when a --resume id points at a session it no longer has. Detected in answer() to
+# clear the dead id and retry ONCE as a fresh session, so a stale id can never wedge
+# a thread forever.
+_DEAD_SESSION_MARKER = "No conversation found with session ID"
+
+
 # ---------------------------------------------------------------------------
 # Command building (pure, trivially testable)
 # ---------------------------------------------------------------------------
@@ -510,6 +517,24 @@ def run_claude(
 # ---------------------------------------------------------------------------
 
 
+def _persist(on_session, session_id):
+    """Fire the persist-the-session-id callback (if any), swallowing any error.
+
+    Called the moment a NEW session id is minted, BEFORE the subprocess starts, so
+    a run interrupted mid-flight (peon hard-killed by launchd on sleep/network drop)
+    still leaves a resumable id in the store rather than orphaning a half-written
+    transcript. A store hiccup must never abort the run, so errors are swallowed
+    (mirrors safe_on_update); the caller also persists the returned id after a clean
+    run, so the id is never lost on the happy path.
+    """
+    if on_session is None:
+        return
+    try:
+        on_session(session_id)
+    except Exception:  # noqa: BLE001 - a persist hiccup must not abort the run
+        pass
+
+
 def answer(
     agent,
     prompt,
@@ -518,6 +543,7 @@ def answer(
     overrides=None,
     on_update=None,
     cancel=None,
+    on_session=None,
 ):
     """Unified runner entrypoint: (reply_text, session_id_to_store, meta).
 
@@ -526,9 +552,21 @@ def answer(
     run a NEW session; otherwise -> --resume that id. Returns (reply, the id used,
     meta) so the caller persists whatever id was used under its (agent, thread)
     key and can render the usage footer. `meta` is the dict run_claude built
-    (context_pct/tokens/cost_usd/duration_s; missing pieces None). This module
-    does NOT touch the store here; persistence is the caller's job (symmetry with
-    codex, where the id is only known after the run).
+    (context_pct/tokens/cost_usd/duration_s; missing pieces None).
+
+    `on_session` (default None) is an optional `on_session(session_id)` callback the
+    caller uses to PERSIST the id. Unlike codex (whose id is only known after the
+    run), claude mints its id up front, so we fire on_session the instant a NEW id
+    is minted, BEFORE the subprocess runs. That makes an interrupted run resumable:
+    even if the child is killed mid-flight nothing is lost. The caller still
+    persists the returned id after a clean run (covering codex and resume), so this
+    is the at-START persist that the post-run persist cannot give.
+
+    DEAD-SESSION RECOVERY: if a --resume run fails with claude's "No conversation
+    found with session ID" (the stored id points at a session claude no longer has,
+    which would otherwise wedge the thread on every future turn), mint+persist a
+    fresh id and retry ONCE as a new session, so a stale id can never permanently
+    stick a thread.
 
     `overrides` (default None) is the per-thread model/effort override dict; it
     is threaded into build_command, where a non-empty field REPLACES the
@@ -541,17 +579,39 @@ def answer(
     if prior_session_id is None:
         session_id = str(uuid.uuid4())
         is_new_session = True
+        # Persist the freshly-minted id BEFORE spawning the subprocess, so an
+        # interrupted run still leaves a resumable id (see _persist).
+        _persist(on_session, session_id)
     else:
         session_id = prior_session_id
         is_new_session = False
-    reply, meta = run_claude(
-        agent,
-        prompt,
-        session_id,
-        is_new_session,
-        timeout=timeout,
-        overrides=overrides,
-        on_update=on_update,
-        cancel=cancel,
-    )
+    try:
+        reply, meta = run_claude(
+            agent,
+            prompt,
+            session_id,
+            is_new_session,
+            timeout=timeout,
+            overrides=overrides,
+            on_update=on_update,
+            cancel=cancel,
+        )
+    except ClaudeRunError as exc:
+        if is_new_session or _DEAD_SESSION_MARKER not in str(exc):
+            raise
+        # The stored id is dead (claude has no such session), so every resume of it
+        # would fail forever. Mint+persist a fresh id (this overwrites the dead one,
+        # clearing it) and retry ONCE as a new session so the thread is never stuck.
+        session_id = str(uuid.uuid4())
+        _persist(on_session, session_id)
+        reply, meta = run_claude(
+            agent,
+            prompt,
+            session_id,
+            True,
+            timeout=timeout,
+            overrides=overrides,
+            on_update=on_update,
+            cancel=cancel,
+        )
     return reply, session_id, meta
