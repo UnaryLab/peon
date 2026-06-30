@@ -55,6 +55,10 @@ def _clean_prompt(text):
     return MENTION_RE.sub("", text or "").strip()
 
 
+def _format_final_response(text):
+    return (text or "").rstrip() + "\n\n"
+
+
 _THREAD_HISTORY_LIMIT = 50
 
 
@@ -176,8 +180,10 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
         last_text = text
         try:
             client.chat_update(channel=channel, ts=placeholder_ts, text=text)
-        except Exception:  # noqa: BLE001 - a transient Slack error must not abort the stream
-            logger.warning("incremental chat_update failed; will retry on next chunk")
+        except Exception as exc:  # noqa: BLE001 - a transient Slack error must not abort the stream
+            logger.warning(
+                "incremental chat_update failed (%s); will retry on next chunk", exc
+            )
 
     return _update
 
@@ -284,7 +290,9 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
                 text = text + "\n" + footer
         # Unconditional FINAL update with the complete text + footer. Always fires,
         # regardless of the streaming throttle, so the last chunk is never lost.
-        client.chat_update(channel=channel, ts=placeholder_ts, text=text)
+        client.chat_update(
+            channel=channel, ts=placeholder_ts, text=_format_final_response(text)
+        )
         # Outbound files: upload only the files the run named in its marker.
         files._maybe_upload_named(client, channel, thread_ts, agent, upload_names)
     except (claude_runner.ClaudeRunError, codex_runner.CodexRunError) as exc:
@@ -310,13 +318,15 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
                 client.chat_update(
                     channel=channel,
                     ts=placeholder_ts,
-                    text=partial + _INTERRUPTED_RESUME_NOTICE,
+                    text=_format_final_response(partial + _INTERRUPTED_RESUME_NOTICE),
                 )
             else:
                 client.chat_update(
                     channel=channel,
                     ts=placeholder_ts,
-                    text=f":warning: {agent['display_name']} hit an error: {exc}",
+                    text=_format_final_response(
+                        f":warning: {agent['display_name']} hit an error: {exc}"
+                    ),
                 )
     except Exception:  # noqa: BLE001 - last-resort guard, keep process alive
         logger.exception("unexpected failure handling %s", agent["name"])
@@ -324,7 +334,9 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
             client.chat_update(
                 channel=channel,
                 ts=placeholder_ts,
-                text=f":warning: {agent['display_name']} hit an unexpected error.",
+                text=_format_final_response(
+                    f":warning: {agent['display_name']} hit an unexpected error."
+                ),
             )
         except Exception:
             logger.exception("failed to post error message")

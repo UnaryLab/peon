@@ -26,6 +26,43 @@ from typing import Any
 # restart and does not dedup across processes; that is fine for this one always-on
 # process. No external cache, no TTL.
 
+_TOKEN_LIMIT_MARKERS = (
+    "token limit",
+    "context length",
+    "context limit",
+    "too many tokens",
+    "maximum context",
+    "exceeds context",
+    "exceeded context",
+    "prompt is too long",
+)
+
+
+def _clean_process_output(text: str | None) -> str:
+    return " ".join((text or "").split())
+
+
+def _looks_like_token_limit(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _TOKEN_LIMIT_MARKERS)
+
+
+def format_process_failure(
+    command_name: str,
+    returncode: int,
+    stderr: str | None = "",
+    stdout: str | None = "",
+    limit: int = 1000,
+) -> str:
+    detail = _clean_process_output(stderr) or _clean_process_output(stdout)
+    if not detail:
+        detail = "no stderr/stdout captured"
+    detail = detail[:limit]
+    if _looks_like_token_limit(detail):
+        detail = f"likely token/context limit: {detail}"
+    return f"{command_name} exited with code {returncode}: {detail}"
+
+
 _SEEN_MAXLEN = 512
 _SEEN_LOCK = threading.Lock()
 _SEEN_IDS = set()

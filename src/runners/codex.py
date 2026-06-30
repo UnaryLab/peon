@@ -40,7 +40,7 @@ import tempfile
 import time
 
 from src import agents
-from src.runners.common import safe_on_update
+from src.runners.common import format_process_failure, safe_on_update
 
 # Default timeout for a single codex run, in MINUTES. A run can take
 # 10s..minutes. Read as minutes and converted to seconds (*60) at the call site
@@ -444,7 +444,12 @@ def run_codex(
             if proc.returncode != 0:
                 stderr = (proc.stderr or "").strip()
                 raise CodexRunError(
-                    f"codex exited with code {proc.returncode}: {stderr[:500]}"
+                    format_process_failure(
+                        "codex",
+                        proc.returncode,
+                        stderr=stderr,
+                        stdout=getattr(proc, "stdout", ""),
+                    )
                 )
             stdout = proc.stdout
         duration_s = time.monotonic() - started
@@ -545,9 +550,7 @@ def _run_codex_streaming(argv, timeout, on_update, cwd=None, cancel=None):
         if cancel is not None and cancel.requested:
             return "".join(lines)
         stderr = (proc.stderr.read() if proc.stderr else "") or ""
-        raise CodexRunError(
-            f"codex exited with code {proc.returncode}: {stderr.strip()[:500]}"
-        )
+        raise CodexRunError(format_process_failure("codex", proc.returncode, stderr))
 
     return "".join(lines)
 

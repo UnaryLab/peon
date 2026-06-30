@@ -3,8 +3,12 @@
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.unarylab.peon</string>
+  <!-- caffeinate -i holds off idle/maintenance sleep while peon runs, so a long
+       agent run is not cut off when a laptop idles on battery. Closing the lid on
+       battery still sleeps; for true always-on, use a non-sleeping host. -->
   <key>ProgramArguments</key>
   <array>
+    <string>/usr/bin/caffeinate</string><string>-i</string><string>--</string>
     <string>/usr/bin/env</string>
     <string>conda</string><string>run</string><string>-n</string><string>peon</string>
     <string>python</string><string>-m</string><string>src</string>
@@ -17,5 +21,8 @@
        (e.g. PATH so launchd can find `claude`/`codex` in ~/.local/bin). -->
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- Wait 30s between relaunches so a crash into a still-broken network does not
+       hot-loop (default is 10s). -->
+  <key>ThrottleInterval</key><integer>30</integer>
 </dict>
 </plist>

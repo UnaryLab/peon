@@ -24,7 +24,7 @@ import subprocess
 import uuid
 
 from src import agents
-from src.runners.common import safe_on_update
+from src.runners.common import format_process_failure, safe_on_update
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -399,9 +399,7 @@ def _run_claude_streaming(agent, argv, timeout, overrides, on_update, cancel=Non
                 )
             return "".join(accumulated), _meta_from_payload({}, agent, overrides)
         stderr = (proc.stderr.read() if proc.stderr else "") or ""
-        raise ClaudeRunError(
-            f"claude exited with code {proc.returncode}: {stderr.strip()[:500]}"
-        )
+        raise ClaudeRunError(format_process_failure("claude", proc.returncode, stderr))
 
     if result_payload is not None:
         if result_payload.get("is_error"):
@@ -486,7 +484,12 @@ def run_claude(
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         raise ClaudeRunError(
-            f"claude exited with code {proc.returncode}: {stderr[:500]}"
+            format_process_failure(
+                "claude",
+                proc.returncode,
+                stderr=stderr,
+                stdout=getattr(proc, "stdout", ""),
+            )
         )
 
     stdout = (proc.stdout or "").strip()

@@ -8,9 +8,17 @@ WorkingDirectory=%h/Projects/peon
 # Runtime config (OBSIDIAN_VAULT_PATH, secrets, timeouts, toggles) lives in
 # .env at WorkingDirectory; peon loads it first and the CLI subprocess inherits
 # it. Add Environment=/EnvironmentFile= here only for vars needed before .env.
+# Linux laptop variant: uncomment this ExecStart to block system sleep and
+# lid-close suspend while peon is running long surveys. `systemd-inhibit` is
+# Linux-only; macOS uses deploy/com.unarylab.peon.plist with caffeinate.
+# ExecStart=/usr/bin/systemd-inhibit --what=sleep:handle-lid-switch --why="peon long-running surveys" --mode=block /usr/bin/env conda run -n peon python -m src
 ExecStart=/usr/bin/env conda run -n peon python -m src
 ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
+Restart=always
+# Wait 30s between relaunches so a crash into a still-broken network does not
+# hot-loop (the launchd ThrottleInterval analog). Linux servers do not
+# maintenance-sleep, so there is no caffeinate equivalent here.
+RestartSec=30
 
 [Install]
 WantedBy=default.target

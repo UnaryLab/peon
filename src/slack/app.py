@@ -38,7 +38,10 @@ from src import agents, store
 
 from . import handlers, scheduler
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+)
 logger = logging.getLogger("peon")
 
 # Set by the SIGHUP handler, consumed by the main reload loop. Module-level so the
