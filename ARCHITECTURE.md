@@ -30,7 +30,7 @@ peon/                          project root
       __init__.py              get_runner(backend) -> the runner facade module (claude or codex); the answer-seam contract
       claude.py                Claude-only runner internals: argv (build_command), run_claude, streaming, answer
       codex.py                 Codex-only runner internals: argv (build_command), run_codex, streaming, answer (NO claude/claude_runner import)
-      common.py                cross-vendor shared: seen_before (dedup) + Interrupt (run cancel token)
+      common.py                cross-vendor shared: seen_before (dedup) + Interrupt (run cancel token) + _stream_enabled/_cwd_from_overrides (runtime helpers) + safe_on_update/format_process_failure
       claude_runner.py         FACADE re-exporting src/runners/claude.py + common.{seen_before, Interrupt} + src/store/* (back-compat public seam)
       codex_runner.py          FACADE re-exporting src/runners/codex.py
     slack/                     Slack-facing layer (the only place that imports slack_bolt)
@@ -43,7 +43,7 @@ peon/                          project root
       files.py                 attachment download (inbound) / upload (outbound)
       usage.py                 _format_usage / _usage_enabled (SHOW_USAGE footer)
   tests/
-    test_runner.py             self-check (pytest). No live Slack/Claude/Codex calls
+    test_*.py                  themed pytest suites sharing tests/helpers.py. No live Slack/Claude/Codex calls
   requirements.txt
   .env.example                 credentials + optional config
   README.md
@@ -81,7 +81,7 @@ keep working:
   by their cross-module callers THROUGH the facade via a lazy in-body
   `from src import app as _appfacade` (so a `setattr(app, name, ...)` in a test is
   honored at call time): `_run_and_update`, `_scheduler_tick`, `_fire_cron`,
-  `_now`, `build_app_for`, `SocketModeHandler`, `reconcile`, `_attachments_dir`,
+  `build_app_for`, `SocketModeHandler`, `reconcile`, `_attachments_dir`,
   `_http_get_bytes`. The store layer's `_resolve_path` seam (above) is the same
   idea for the store-path resolvers patched on `claude_runner`.
 
@@ -96,7 +96,7 @@ its registry `backend` field (default `"claude"`). Both runner modules expose on
 unified seam:
 
 ```python
-answer(agent, prompt, prior_session_id, overrides=None, on_update=None, cancel=None, on_session=None)
+answer(agent, prompt, prior_session_id, timeout=None, overrides=None, on_update=None, cancel=None, on_session=None)
     -> (reply_text, session_id_to_store, meta)
 ```
 
@@ -250,7 +250,8 @@ Context is keyed on `(agent_name, slack_thread_ts)`:
 Because the key **includes `agent_name`**, different agents never share a
 session id even for the same `thread_ts`, so contexts stay independent. A new
 Slack thread is a new key, hence a fresh context. (See the
-`get_or_create_session` tests in `tests/test_runner.py` for the guarantee.)
+`get_or_create_session` tests in `tests/test_build_command.py` and
+`tests/test_env.py` for the guarantee.)
 
 **Persist-at-start (resilient to interruption).** peon runs under launchd with
 `KeepAlive=true`, so a machine sleep / network drop / crash relaunches peon and

@@ -24,7 +24,12 @@ import subprocess
 import uuid
 
 from src import agents
-from src.runners.common import format_process_failure, safe_on_update
+from src.runners.common import (
+    _cwd_from_overrides,
+    _stream_enabled,
+    format_process_failure,
+    safe_on_update,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -52,21 +57,6 @@ _CLAUDE_MODEL_FALLBACK = "claude-opus-4-8[1m]"
 # reflects the model actually used.
 _CONTEXT_WINDOW_1M = 1_000_000
 _CONTEXT_WINDOW_DEFAULT = 200_000
-
-
-def _stream_enabled():
-    """Whether to use the incremental streaming output path. Read LIVE from
-    os.environ (so a SIGHUP .env reload takes effect). DEFAULT ON: streaming is
-    used unless STREAM_OUTPUT is explicitly falsy ("0"/"false"/"no"/"off",
-    case-insensitive). STREAM_OUTPUT=0 forces the legacy single-JSON path with
-    its original exact argv and one final update.
-    """
-    return os.environ.get("STREAM_OUTPUT", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
 
 
 class ClaudeRunError(Exception):
@@ -178,18 +168,6 @@ def build_command(
 
     argv += [prompt]
     return argv
-
-
-def _cwd_from_overrides(overrides):
-    """The subprocess cwd for this run: the per-thread workdir, or None for the
-    inherited process cwd. Returns overrides["_workdir"] when present (the worker
-    always injects it), creating the dir on demand so the CLI can write into it.
-    """
-    if overrides and overrides.get("_workdir"):
-        workdir = overrides["_workdir"]
-        os.makedirs(workdir, exist_ok=True)
-        return workdir
-    return None
 
 
 # ---------------------------------------------------------------------------

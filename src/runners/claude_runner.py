@@ -47,7 +47,6 @@ from .common import Interrupt, seen_before  # noqa: F401
 from src.store.base import (  # noqa: F401
     _SESSIONS_LOCK,
     _load_dict_store,
-    _now,
     _save_dict_store,
     _session_key,
     _sessions_path,

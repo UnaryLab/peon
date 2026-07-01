@@ -7,7 +7,6 @@ beside sessions.json and SESSIONS_PATH redirects all of them at once.
 
 from __future__ import annotations
 
-from .base import _now  # noqa: F401
 from .crons import (  # noqa: F401
     add_cron,
     list_crons,

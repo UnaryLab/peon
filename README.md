@@ -389,6 +389,4 @@ calls.
 
 ```sh
 conda run -n peon python -m pytest tests/ -q
-# or, without pytest:
-conda run -n peon python tests/test_runner.py
 ```

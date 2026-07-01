@@ -58,7 +58,7 @@ import json
 import logging
 import os
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger("peon")
 
 # Required keys every agents.json entry must carry. claude_agent/model/effort are
 # optional here: claude_agent defaults to "no --agent", and model/effort fall back
@@ -150,7 +150,7 @@ def resolve(agent, key, default=""):
     value = agent.get(key)
     if value:
         return value
-    _log.warning(
+    logger.warning(
         "agents.json entry %r is missing %r; falling back to default %r. "
         "Set %r explicitly in agents.json (it is the source of truth).",
         agent.get("name", "<no name>"),

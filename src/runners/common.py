@@ -2,18 +2,55 @@
 
 Holds the symbols both the claude and codex runners truly share: the idempotency
 dedup (`seen_before`), the run-interrupt handle (`Interrupt`), the incremental-
-update helper (`safe_on_update`), and the process-failure error formatter
-(`format_process_failure`). All are Slack-agnostic, so this is importable without
-slack_bolt and is unit-testable. The vendor facades (claude_runner /
-codex_runner) re-export `seen_before` and `Interrupt` from here.
+update helper (`safe_on_update`), the process-failure error formatter
+(`format_process_failure`), and the two runtime helpers `_stream_enabled` (the
+STREAM_OUTPUT toggle) and `_cwd_from_overrides` (the per-thread workdir cwd). All
+are Slack-agnostic, so this is importable without slack_bolt and is unit-testable.
+The vendor facades (claude_runner / codex_runner) re-export `seen_before` and
+`Interrupt` from here; `_stream_enabled` / `_cwd_from_overrides` reach the facades
+via the claude/codex modules that import them from here.
 """
 
 from __future__ import annotations
 
 import collections
+import os
 import signal
 import threading
 from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Runtime helpers shared by both runners
+# ---------------------------------------------------------------------------
+def _stream_enabled():
+    """Whether to use the incremental streaming output path. Read LIVE from
+    os.environ (so a SIGHUP .env reload takes effect). DEFAULT ON: streaming is
+    used unless STREAM_OUTPUT is explicitly falsy ("0"/"false"/"no"/"off",
+    case-insensitive). One env var toggles both backends together; STREAM_OUTPUT=0
+    forces the legacy single-shot path (claude: its exact pre-streaming argv;
+    codex: read all stdout at once). The codex argv is unchanged either way (it
+    already emits JSONL via --json); only HOW stdout is consumed differs.
+    """
+    return os.environ.get("STREAM_OUTPUT", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _cwd_from_overrides(overrides):
+    """The subprocess cwd for this run: the per-thread workdir, or None for the
+    inherited process cwd. Returns overrides["_workdir"] when present (the worker
+    always injects it), creating the dir on demand so the CLI can write into it.
+    Shared by both runners.
+    """
+    if overrides and overrides.get("_workdir"):
+        workdir = overrides["_workdir"]
+        os.makedirs(workdir, exist_ok=True)
+        return workdir
+    return None
 
 
 # ---------------------------------------------------------------------------

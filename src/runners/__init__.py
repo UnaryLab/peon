@@ -2,7 +2,8 @@
 
 A runner is any module exposing the unified seam
   answer(agent, prompt, prior_session_id, timeout=None, overrides=None,
-         on_update=None) -> (reply_text, session_id_to_store, meta)
+         on_update=None, cancel=None, on_session=None)
+      -> (reply_text, session_id_to_store, meta)
 where prior_session_id is the stored session id for this (agent, thread) or None
 on the first message, session_id_to_store is whatever id the caller should
 persist for resumes, and meta is the usage dict {context_pct, tokens, cost_usd,

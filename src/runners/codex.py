@@ -40,29 +40,17 @@ import tempfile
 import time
 
 from src import agents
-from src.runners.common import format_process_failure, safe_on_update
+from src.runners.common import (
+    _cwd_from_overrides,
+    _stream_enabled,
+    format_process_failure,
+    safe_on_update,
+)
 
 # Default timeout for a single codex run, in MINUTES. A run can take
 # 10s..minutes. Read as minutes and converted to seconds (*60) at the call site
 # for subprocess.run; default 2880 minutes (2 days).
 DEFAULT_TIMEOUT_MIN = int(os.environ.get("CODEX_TIMEOUT_MIN", "2880"))
-
-
-def _stream_enabled():
-    """Whether to consume codex's JSONL stdout incrementally (post partial text as
-    it arrives) vs. only reading the -o file at the end. Read LIVE from os.environ
-    so a SIGHUP .env reload takes effect. DEFAULT ON: unless STREAM_OUTPUT is
-    explicitly falsy ("0"/"false"/"no"/"off", case-insensitive). Mirrors the
-    claude runner's switch and the same single env var, so STREAM_OUTPUT toggles
-    both backends together. The argv is UNCHANGED either way (codex already emits
-    JSONL via --json); only HOW stdout is read differs.
-    """
-    return os.environ.get("STREAM_OUTPUT", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
 
 
 # Model and reasoning effort come SOLELY from the agent's agents.json entry
@@ -77,19 +65,6 @@ def _stream_enabled():
 
 class CodexRunError(Exception):
     """Raised when a codex run fails (nonzero exit, timeout, empty reply)."""
-
-
-def _cwd_from_overrides(overrides):
-    """The subprocess cwd for this run: the per-thread workdir, or None for the
-    inherited process cwd. Returns overrides["_workdir"] when present (the worker
-    always injects it), creating the dir on demand so codex can write into it.
-    Mirrors claude_runner's helper.
-    """
-    if overrides and overrides.get("_workdir"):
-        workdir = overrides["_workdir"]
-        os.makedirs(workdir, exist_ok=True)
-        return workdir
-    return None
 
 
 # ---------------------------------------------------------------------------

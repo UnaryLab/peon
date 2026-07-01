@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 
 # ponytail: session store is a JSON file; fine for one process / modest volume;
 # swap for sqlite if it grows or needs multi-process access. The read-modify-write
@@ -79,10 +78,6 @@ def _sibling_store_path(filename):
     env var. Read lazily (per access) for the same reason _sessions_path is.
     """
     return os.path.join(os.path.dirname(_sessions_path()), filename)
-
-
-# Default wall-clock seam for the stores. Module-level so tests can inject a fake.
-_now = time.time
 
 
 def _resolve_path(attr, fallback):
