@@ -6,8 +6,10 @@ Interrupt token here under the run's (agent, thread) key; a "!stop"/"stop"/
 plus a graceful-settle flag the runner reads). See src.runners.common.Interrupt.
 
 In-memory only (subprocess handles are not serializable) and single-process, like
-the seen_before dedup. Thread-safe; last-writer-wins per (agent, thread) if a
-thread somehow has two concurrent runs (peon has no per-thread queue).
+the seen_before dedup. Thread-safe. One run per (agent, thread): the message path
+claims the slot atomically with try_register (the busy guard) and declines a
+second concurrent message, so it never overwrites a live token. Only the cron path
+still uses register (last-writer-wins) if a run somehow overlaps.
 """
 
 from __future__ import annotations
@@ -51,6 +53,25 @@ def register(agent_name, thread_ts):
     """Create + register an Interrupt token for this run; return it."""
     token = Interrupt()
     with _LOCK:
+        _RUNNING[(agent_name, thread_ts)] = token
+    return token
+
+
+def try_register(agent_name, thread_ts):
+    """Register a token ONLY if this thread has no run in flight (the busy guard).
+
+    Returns the new token, or None if a run is already registered for this
+    (agent, thread). Atomic under _LOCK, so two near-simultaneous messages to one
+    thread cannot both pass: the first claims the slot, the second gets None and
+    the caller declines to start a competing run (which would --resume the same
+    session id concurrently). Unlike register(), this never overwrites a live
+    token. The caller passes the returned token into the run and unregister()s it
+    when done. register() (unconditional) is still used by the cron path.
+    """
+    token = Interrupt()
+    with _LOCK:
+        if (agent_name, thread_ts) in _RUNNING:
+            return None
         _RUNNING[(agent_name, thread_ts)] = token
     return token
 

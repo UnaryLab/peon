@@ -7,7 +7,9 @@ from src.runners import claude_runner
 from tests.helpers import (
     _FILE_AGENT,
     _appmod,
+    _HANDLE_AGENT,
     _HAVE_APP,
+    _FakeSay,
 )
 
 
@@ -265,3 +267,74 @@ def test_run_and_update_no_marker_uploads_nothing(monkeypatch, tmp_path):
 
     _appmod._run_and_update(client, "C1", "TS1", _FILE_AGENT, "hi", "T_nofiles")
     assert uploads == []
+
+
+def test_handle_declines_when_thread_busy(monkeypatch):
+    """A second message to a thread with a run in flight is refused, not run
+    (a second run would --resume the same session id concurrently: a race)."""
+    if not _HAVE_APP:
+        return
+    from src.slack import handlers, interrupt
+
+    monkeypatch.setattr(handlers.claude_runner, "seen_before", lambda _id: False)
+
+    def _no_thread(*a, **k):
+        raise AssertionError("must not spawn a worker while the thread is busy")
+
+    monkeypatch.setattr(handlers.threading, "Thread", _no_thread)
+
+    held = interrupt.try_register(_HANDLE_AGENT["name"], "T_busy")
+    assert held is not None
+    try:
+        say = _FakeSay()
+        event = {"channel": "C1", "ts": "T_busy", "text": "hello"}
+        handlers._handle(_HANDLE_AGENT, event, object(), say)
+        assert "still working" in say.posts[-1]["text"]
+        # The in-flight run's slot is untouched by the declined message.
+        assert interrupt.try_register(_HANDLE_AGENT["name"], "T_busy") is None
+    finally:
+        interrupt.unregister(_HANDLE_AGENT["name"], "T_busy", held)
+
+
+def test_handle_claims_slot_and_threads_token(monkeypatch):
+    """A free thread: _handle claims the busy slot and threads THAT SAME token
+    into the worker, so !stop and the finally-release act on the live run."""
+    if not _HAVE_APP:
+        return
+    from src.slack import handlers, interrupt
+
+    monkeypatch.setattr(handlers.claude_runner, "seen_before", lambda _id: False)
+
+    class _Client:
+        def conversations_replies(self, **kwargs):
+            return {"messages": []}
+
+    captured = {}
+
+    class _FakeThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            captured["args"] = args
+            captured["kwargs"] = kwargs or {}
+            captured["daemon"] = daemon
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setattr(handlers.threading, "Thread", _FakeThread)
+
+    say = _FakeSay()
+    event = {"channel": "C1", "ts": "T_free", "text": "hello"}
+    handlers._handle(_HANDLE_AGENT, event, _Client(), say)
+
+    # Worker spawned as a daemon with a token threaded in.
+    assert captured.get("started") is True
+    assert captured["daemon"] is True
+    token = captured["kwargs"]["token"]
+    assert token is not None
+
+    # The threaded token IS the one holding the slot: the thread reads busy, and
+    # signaling the run finds and trips exactly this token.
+    assert interrupt.try_register(_HANDLE_AGENT["name"], "T_free") is None
+    assert interrupt.request(_HANDLE_AGENT["name"], "T_free") is True
+    assert token.requested is True
+    interrupt.unregister(_HANDLE_AGENT["name"], "T_free", token)

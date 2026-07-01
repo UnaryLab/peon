@@ -195,7 +195,9 @@ def _make_stream_updater(client, channel, placeholder_ts, now=None):
     return _update
 
 
-def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
+def _run_and_update(
+    client, channel, placeholder_ts, agent, prompt, thread_ts, token=None
+):
     """Background worker: resolve session, run the agent's backend, edit the placeholder.
 
     Backend-agnostic via the unified runner seam: load the prior session id for
@@ -224,7 +226,10 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
     """
     # Register a cancel token so a "!stop" in this thread can SIGINT the run; the
     # finally below always drops it. See src.slack.interrupt / common.Interrupt.
-    token = interrupt.register(agent["name"], thread_ts)
+    # _handle pre-registers via try_register (the busy guard) and passes the token
+    # in; callers without one (cron) register their own here.
+    if token is None:
+        token = interrupt.register(agent["name"], thread_ts)
     # Bound before the try so the error branch can always read the last streamed
     # text, even if a ClaudeRunError were ever raised before the updater is built.
     streamed = {"text": ""}
@@ -242,6 +247,12 @@ def _run_and_update(client, channel, placeholder_ts, agent, prompt, thread_ts):
         prompt = (
             f"For this conversation your name is {agent['display_name']}. "
             f"If the user asks who you are, you are {agent['display_name']}.\n\n"
+            "This run is a single non-interactive turn: the process exits as soon "
+            "as your reply is complete, so any subagent or task you start in the "
+            "BACKGROUND (e.g. run_in_background) is killed before it finishes and "
+            "its work is lost. Do all long or multi-step work (surveys, research, "
+            "builds) synchronously in the FOREGROUND within this turn; it is fine "
+            "for the reply to take a while.\n\n"
             "If -- and only if -- the user explicitly asks you to produce, send, "
             "attach, or share a file, end your reply with a line "
             "`<<files: name1, name2>>` naming the files (paths in your working "
@@ -390,30 +401,57 @@ def _handle(agent, event, client, say):
     ):
         return
 
-    history = _fetch_thread_history(client, channel, thread_ts, event.get("ts"))
+    # Busy guard: one run per (agent, thread) at a time. try_register atomically
+    # claims the thread's slot; if a run is already in flight it returns None and
+    # we decline rather than spawn a second run that would --resume the same
+    # session id concurrently (a race). The token is threaded into the worker and
+    # released in _run_and_update's finally. "!stop" still reaches the live run
+    # (handled above, before this guard), so a stuck thread is never wedged.
+    token = interrupt.try_register(agent["name"], thread_ts)
+    if token is None:
+        say(
+            text=(
+                f"{agent['display_name']} is still working on an earlier message "
+                "in this thread. Wait for it to finish, or send `!stop` to cancel it."
+            ),
+            thread_ts=thread_ts,
+        )
+        return
 
-    # Inbound attachments: download any files[] on this message with the bot token
-    # and append their local paths to the prompt so the CLI agent can read them.
-    # A failed download is skipped (see _download_attachments); no files -> the
-    # prompt is unchanged.
-    attachment_paths = files._download_attachments(
-        client, event.get("files"), thread_ts
-    )
-    prompt = files._append_attachments(prompt, attachment_paths)
-    prompt = _append_thread_history(prompt, history)
+    # We hold the thread's busy slot now (token). Until the worker starts and its
+    # finally takes over cleanup, any failure here (history fetch, placeholder
+    # post) must release the slot, or the thread would wedge as permanently busy.
+    try:
+        history = _fetch_thread_history(client, channel, thread_ts, event.get("ts"))
 
-    # Post a placeholder immediately (the Slack ack already happened), then do
-    # the slow claude run off-thread so we never block. Show a random short
-    # "peon" worker quote as the placeholder; an empty quote (no/invalid
-    # quotes.json) falls back to the default "is thinking..." text.
-    quote = quotes.random_quote()
-    placeholder_text = quote or f"{agent['display_name']} is thinking..."
-    placeholder = say(text=placeholder_text, thread_ts=thread_ts)
-    placeholder_ts = placeholder["ts"]
+        # Inbound attachments: download any files[] on this message with the bot
+        # token and append their local paths to the prompt so the CLI agent can
+        # read them. A failed download is skipped (see _download_attachments); no
+        # files -> the prompt is unchanged.
+        attachment_paths = files._download_attachments(
+            client, event.get("files"), thread_ts
+        )
+        prompt = files._append_attachments(prompt, attachment_paths)
+        prompt = _append_thread_history(prompt, history)
 
-    worker = threading.Thread(
-        target=_run_and_update,
-        args=(client, channel, placeholder_ts, agent, prompt, thread_ts),
-        daemon=True,
-    )
-    worker.start()
+        # Post a placeholder immediately (the Slack ack already happened), then do
+        # the slow claude run off-thread so we never block. Show a random short
+        # "peon" worker quote as the placeholder; an empty quote (no/invalid
+        # quotes.json) falls back to the default "is thinking..." text.
+        quote = quotes.random_quote()
+        placeholder_text = quote or f"{agent['display_name']} is thinking..."
+        placeholder = say(text=placeholder_text, thread_ts=thread_ts)
+        placeholder_ts = placeholder["ts"]
+
+        worker = threading.Thread(
+            target=_run_and_update,
+            args=(client, channel, placeholder_ts, agent, prompt, thread_ts),
+            kwargs={"token": token},
+            daemon=True,
+        )
+        worker.start()
+    except Exception:
+        # Handoff failed before the worker could own the slot: release it so the
+        # thread is not stuck busy, then let the error propagate as before.
+        interrupt.unregister(agent["name"], thread_ts, token)
+        raise

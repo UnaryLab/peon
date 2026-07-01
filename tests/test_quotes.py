@@ -121,7 +121,7 @@ def test_handle_includes_prior_thread_history_in_prompt(monkeypatch):
     captured = {}
 
     class _CaptureThread:
-        def __init__(self, target=None, args=None, daemon=None):
+        def __init__(self, target=None, args=None, daemon=None, kwargs=None):
             captured["target"] = target
             captured["args"] = args
             captured["daemon"] = daemon

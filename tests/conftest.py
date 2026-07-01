@@ -44,3 +44,23 @@ def _default_stream_output_off(monkeypatch):
     """
     monkeypatch.setenv("STREAM_OUTPUT", "0")
     monkeypatch.setenv("SHOW_USAGE", "0")
+
+
+@pytest.fixture(autouse=True)
+def _clear_interrupt_registry():
+    """Start each test with an empty interrupt (busy-guard) registry.
+
+    _handle now claims a per-(agent, thread) slot in interrupt._RUNNING before
+    spawning the worker; a test that fakes the worker thread never runs the real
+    finally that releases it, so the slot would leak into later tests and make
+    them read as "busy". Clearing before each test keeps the busy-guard tests
+    (and any that fake the Thread) independent. Best-effort: if slack_bolt is
+    absent and interrupt cannot import, there is nothing to clear.
+    """
+    try:
+        from src.slack import interrupt
+
+        with interrupt._LOCK:
+            interrupt._RUNNING.clear()
+    except Exception:  # noqa: BLE001 - no registry to clear is fine
+        pass

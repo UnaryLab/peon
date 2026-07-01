@@ -100,6 +100,32 @@ def test_interrupt_registry_register_request_unregister():
     interrupt.unregister("aristotle", "t-3", tok_b)
 
 
+def test_interrupt_registry_try_register_busy_guard():
+    """try_register claims a free thread but refuses an occupied one (the guard)."""
+    from src.slack import interrupt
+
+    # Free thread: claims the slot, returns a token.
+    tok = interrupt.try_register("aristotle", "t-busy")
+    assert tok is not None
+
+    # Same (agent, thread) now busy: try_register returns None and does NOT
+    # overwrite the live token (unlike register()).
+    assert interrupt.try_register("aristotle", "t-busy") is None
+    assert interrupt.request("aristotle", "t-busy") is True
+    assert tok.requested is True
+
+    # A different thread is independent (per-(agent, thread) slot).
+    other = interrupt.try_register("aristotle", "t-free")
+    assert other is not None
+    interrupt.unregister("aristotle", "t-free", other)
+
+    # After release, the thread can be claimed again.
+    interrupt.unregister("aristotle", "t-busy", tok)
+    again = interrupt.try_register("aristotle", "t-busy")
+    assert again is not None
+    interrupt.unregister("aristotle", "t-busy", again)
+
+
 def test_control_phrase_interrupt_dispatch():
     from src.slack import control, interrupt
 
